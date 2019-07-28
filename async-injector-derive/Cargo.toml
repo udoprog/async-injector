@@ -1,0 +1,13 @@
+[package]
+name = "async-injector-derive"
+version = "0.1.0"
+authors = ["John-John Tedro <udoprog@tedro.se>"]
+edition = "2018"
+license = "MIT/Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/udoprog/async-injector"
+homepage = "https://github.com/udoprog/async-injector"
+documentation = "https://docs.rs/async-injector"
+description = """
+A derive to help construct dependent values in async-injector.
+"""
