@@ -18,6 +18,12 @@ use std::{
     task::{Context, Poll},
 };
 
+#[macro_use]
+#[allow(unused_imports)]
+extern crate async_injector_derive;
+#[doc(hidden)]
+pub use self::async_injector_derive::*;
+
 #[derive(Debug, Clone, Copy)]
 pub enum Error {
     /// Failed to perform work due to injector shutting down.
@@ -82,8 +88,8 @@ impl<T> stream::FusedStream for Stream<T> {
 #[derive(Default)]
 struct Storage {
     id: u32,
-    storage: HashMap<TypeId, Box<dyn Any + Send + Sync + 'static>>,
-    subs: HashMap<TypeId, Vec<Sender>>,
+    storage: HashMap<RawKey, Box<dyn Any + Send + Sync + 'static>>,
+    subs: HashMap<RawKey, Vec<Sender>>,
 }
 
 struct Inner {
@@ -119,15 +125,22 @@ impl Injector {
     where
         T: Clone + Any + Send + Sync + 'static,
     {
-        let type_id = TypeId::of::<T>();
+        self.clear_key::<T>(&Key::<T>::of())
+    }
 
+    /// Clear the given value.
+    pub fn clear_key<T>(&self, key: &Key<T>)
+    where
+        T: Clone + Any + Send + Sync + 'static,
+    {
+        let key = key.as_raw_key();
         let mut storage = self.inner.storage.write();
 
-        if let None = storage.storage.remove(&type_id) {
+        if let None = storage.storage.remove(&key) {
             return;
         }
 
-        self.try_send(&mut *storage, type_id, || None);
+        self.try_send(&mut *storage, &key, || None);
     }
 
     /// Set the given value and notify any subscribers.
@@ -135,10 +148,18 @@ impl Injector {
     where
         T: Any + Send + Sync + 'static + Clone,
     {
-        let type_id = TypeId::of::<T>();
+        self.update_key(&Key::<T>::of(), value)
+    }
+
+    /// Set the given value and notify any subscribers.
+    pub fn update_key<T>(&self, key: &Key<T>, value: T)
+    where
+        T: Any + Send + Sync + 'static + Clone,
+    {
+        let key = key.as_raw_key();
         let mut storage = self.inner.storage.write();
-        self.try_send(&mut *storage, type_id, || Some(Box::new(value.clone())));
-        storage.storage.insert(type_id, Box::new(value));
+        self.try_send(&mut *storage, &key, || Some(Box::new(value.clone())));
+        storage.storage.insert(key, Box::new(value));
     }
 
     /// Get a value from the injector.
@@ -146,10 +167,18 @@ impl Injector {
     where
         T: Any + Send + Sync + 'static + Clone,
     {
-        let type_id = TypeId::of::<T>();
+        self.get_key(&Key::<T>::of())
+    }
+
+    /// Get a value from the injector with the given key.
+    pub fn get_key<T>(&self, key: &Key<T>) -> Option<T>
+    where
+        T: Any + Send + Sync + 'static + Clone,
+    {
+        let key = key.as_raw_key();
         let storage = self.inner.storage.read();
 
-        match storage.storage.get(&type_id) {
+        match storage.storage.get(&key) {
             Some(value) => match value.downcast_ref::<T>() {
                 Some(value) => Some(value.clone()),
                 None => panic!("downcast failed"),
@@ -163,11 +192,18 @@ impl Injector {
     where
         T: Any + Send + Sync + 'static + Clone,
     {
-        let type_id = TypeId::of::<T>();
+        self.stream_key(&Key::<T>::of())
+    }
 
+    /// Get an existing value and setup a stream for updates at the same time.
+    pub fn stream_key<T>(&self, key: &Key<T>) -> (Stream<T>, Option<T>)
+    where
+        T: Any + Send + Sync + 'static + Clone,
+    {
+        let key = key.as_raw_key();
         let mut storage = self.inner.storage.write();
 
-        let value = match storage.storage.get(&type_id) {
+        let value = match storage.storage.get(&key) {
             Some(value) => match value.downcast_ref::<T>() {
                 Some(value) => Some(value.clone()),
                 None => panic!("downcast failed"),
@@ -178,11 +214,8 @@ impl Injector {
         let id = storage.id;
         storage.id += 1;
         let (tx, rx) = mpsc::unbounded();
-        storage
-            .subs
-            .entry(type_id)
-            .or_default()
-            .push(Sender { id, tx });
+
+        storage.subs.entry(key).or_default().push(Sender { id, tx });
 
         let stream = Stream {
             rx,
@@ -193,13 +226,21 @@ impl Injector {
     }
 
     /// Get a synchronized variable for the given configuration key.
-    pub fn var<'a, T>(&self) -> Result<Arc<RwLock<Option<T>>>, Error>
+    pub fn var<T>(&self) -> Result<Arc<RwLock<Option<T>>>, Error>
+    where
+        T: Any + Send + Sync + 'static + Clone + Unpin,
+    {
+        self.var_key(&Key::<T>::of())
+    }
+
+    /// Get a synchronized variable for the given configuration key.
+    pub fn var_key<T>(&self, key: &Key<T>) -> Result<Arc<RwLock<Option<T>>>, Error>
     where
         T: Any + Send + Sync + 'static + Clone + Unpin,
     {
         use futures::StreamExt as _;
 
-        let (mut stream, value) = self.stream();
+        let (mut stream, value) = self.stream_key(key);
         let value = Arc::new(RwLock::new(value));
         let future_value = value.clone();
 
@@ -224,7 +265,7 @@ impl Injector {
     }
 
     /// Try to perform a send, or clean up if one fails.
-    fn try_send<S>(&self, storage: &mut Storage, type_id: TypeId, send: S)
+    fn try_send<S>(&self, storage: &mut Storage, key: &RawKey, send: S)
     where
         S: Fn() -> Option<Box<dyn Any + Send + Sync + 'static>>,
     {
@@ -232,7 +273,7 @@ impl Injector {
         // TODO: handle this in driver instead.
         let mut to_delete = smallvec::SmallVec::<[u32; 16]>::new();
 
-        if let Some(subs) = storage.subs.get(&type_id) {
+        if let Some(subs) = storage.subs.get(key) {
             for s in subs {
                 if let Err(e) = s.tx.unbounded_send(send()) {
                     if e.is_disconnected() {
@@ -251,7 +292,7 @@ impl Injector {
 
         let to_delete = to_delete.into_iter().collect::<HashSet<_>>();
 
-        if let Some(subs) = storage.subs.get_mut(&type_id) {
+        if let Some(subs) = storage.subs.get_mut(key) {
             let new_subs = subs
                 .drain(..)
                 .into_iter()
@@ -296,6 +337,53 @@ impl Injector {
                     }
                 }
             }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
+pub struct RawKey {
+    type_id: TypeId,
+    tag: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
+pub struct Key<T>
+where
+    T: Any,
+{
+    type_id: TypeId,
+    tag: Option<String>,
+    marker: std::marker::PhantomData<T>,
+}
+
+impl<T> Key<T>
+where
+    T: Any,
+{
+    /// Construct a new key without a tag.
+    pub fn of() -> Self {
+        Self {
+            type_id: TypeId::of::<T>(),
+            tag: None,
+            marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Construct a new key.
+    pub fn tagged(tag: &str) -> Self {
+        Self {
+            type_id: TypeId::of::<T>(),
+            tag: Some(tag.to_owned()),
+            marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Convert into a raw key.
+    pub fn as_raw_key(&self) -> RawKey {
+        RawKey {
+            type_id: self.type_id,
+            tag: self.tag.clone(),
         }
     }
 }
