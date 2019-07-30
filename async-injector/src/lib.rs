@@ -1,12 +1,12 @@
 #![feature(async_await)]
 //! Asynchronous dependency injection for Rust.
 
+use chashmap::CHashMap;
 use futures::{
     channel::mpsc,
     ready,
     stream::{self, StreamExt as _},
 };
-use hashbrown::HashMap;
 use parking_lot::{Mutex, RwLock};
 use std::{
     any::{Any, TypeId},
@@ -121,7 +121,7 @@ impl Storage {
 }
 
 struct Inner {
-    storage: RwLock<HashMap<RawKey, Storage>>,
+    storage: CHashMap<RawKey, Storage>,
     /// Channel where new drivers are sent.
     drivers: mpsc::UnboundedSender<Driver>,
     /// Receiver for drivers. Used by the run function.
@@ -163,9 +163,7 @@ impl Injector {
     {
         let key = key.as_raw_key();
 
-        let mut storage = self.inner.storage.write();
-
-        let storage = match storage.get_mut(&key) {
+        let mut storage = match self.inner.storage.get_mut(&key) {
             Some(storage) => storage,
             None => return,
         };
@@ -191,10 +189,19 @@ impl Injector {
         T: Any + Send + Sync + 'static + Clone,
     {
         let key = key.as_raw_key();
-        let mut storage = self.inner.storage.write();
-        let storage = storage.entry(key).or_default();
-        storage.try_send(|| Some(Box::new(value.clone())));
-        storage.value = Some(Box::new(value));
+
+        self.inner.storage.upsert(
+            key,
+            || {
+                let mut storage = Storage::default();
+                storage.value = Some(Box::new(value.clone()));
+                storage
+            },
+            |storage| {
+                storage.try_send(|| Some(Box::new(value.clone())));
+                storage.value = Some(Box::new(value.clone()));
+            },
+        );
     }
 
     /// Get a value from the injector.
@@ -212,8 +219,7 @@ impl Injector {
     {
         let key = key.as_raw_key();
 
-        let storage = self.inner.storage.read();
-        let storage = storage.get(&key)?;
+        let storage = self.inner.storage.get(&key)?;
         let value = storage.value.as_ref()?;
 
         match value.downcast_ref::<T>() {
@@ -239,19 +245,27 @@ impl Injector {
 
         let (tx, rx) = mpsc::unbounded();
 
-        let value = {
-            let mut storage = self.inner.storage.write();
-            let storage = storage.entry(key).or_default();
-            storage.subs.push(Sender { tx: tx.clone() });
+        let mut value = None;
 
-            match storage.value.as_ref() {
-                Some(value) => match value.downcast_ref::<T>() {
-                    Some(value) => Some(value.clone()),
-                    None => panic!("downcast failed"),
-                },
-                None => None,
-            }
-        };
+        self.inner.storage.upsert(
+            key,
+            || {
+                let mut storage = Storage::default();
+                storage.subs.push(Sender { tx: tx.clone() });
+                storage
+            },
+            |storage| {
+                storage.subs.push(Sender { tx: tx.clone() });
+
+                value = match storage.value.as_ref() {
+                    Some(value) => match value.downcast_ref::<T>() {
+                        Some(value) => Some(value.clone()),
+                        None => panic!("downcast failed"),
+                    },
+                    None => None,
+                };
+            },
+        );
 
         let stream = Stream {
             rx,
