@@ -20,7 +20,7 @@ struct Thing {
 
 /// Provider that describes how to construct a `Thing`.
 #[derive(Provider)]
-#[provider(constructor = "build", output = "Thing", error = "Error")]
+#[provider(of = "Thing", constructor = "build", error = "Error")]
 struct ThingProvider {
     #[dependency(tag = "title")]
     title: String,

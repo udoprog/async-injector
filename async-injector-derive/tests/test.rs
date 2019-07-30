@@ -57,7 +57,7 @@ fn test_something() {
     });
 
     #[derive(Provider)]
-    #[provider(constructor = "build", output = "Foo", error = "()")]
+    #[provider(of = "Foo", constructor = "build", error = "()")]
     struct Test {
         fixed: String,
         /// Dependency to untagged foo.
@@ -118,7 +118,7 @@ fn test_immediate_run() {
     });
 
     #[derive(Provider)]
-    #[provider(constructor = "build", output = "Foo", error = "()")]
+    #[provider(of = "Foo", constructor = "build", error = "()")]
     struct Test {
         #[dependency]
         foo: String,

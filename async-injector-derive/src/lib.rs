@@ -69,7 +69,17 @@ fn provider_config<'a>(ast: &'a DeriveInput, st: &'a DataStruct) -> ProviderConf
         None => panic!("missing #[provider(..)] attribute"),
     };
 
-    ProviderConfig { provider, fields }
+    let of = syn::parse_str::<TokenStream>(&provider.of).expect("of: to be valid expression");
+
+    let error =
+        syn::parse_str::<TokenStream>(&provider.error).expect("error: to be valid expression");
+
+    ProviderConfig {
+        of,
+        error,
+        provider,
+        fields,
+    }
 }
 
 /// Extracts provider fields.
@@ -196,10 +206,8 @@ fn impl_factory<'a>(
 ) -> (TokenStream, Ident) {
     let factory_ident = Ident::new(&format!("{}Factory", ident), Span::call_site());
 
-    let output = syn::parse_str::<TokenStream>(&config.provider.output)
-        .expect("output: to be valid expression");
-    let error = syn::parse_str::<TokenStream>(&config.provider.error)
-        .expect("error: to be valid expression");
+    let of = &config.of;
+    let error = &config.error;
 
     let mut provider_fields = Vec::new();
     let mut injected_fields_init = Vec::new();
@@ -227,7 +235,7 @@ fn impl_factory<'a>(
                 let #field_ident = match self.#field_ident.as_ref() {
                     Some(#field_ident) => #field_ident,
                     None => {
-                        injector.clear::<#output>();
+                        injector.clear::<#of>();
                         continue;
                     },
                 };
@@ -312,8 +320,7 @@ fn impl_immediate_run<'a>(
         }
     }
 
-    let error = syn::parse_str::<TokenStream>(&config.provider.error)
-        .expect("error: to be valid expression");
+    let error = &config.error;
 
     let run = quote! {
         pub async fn run(injector: &::async_injector::Injector) -> Result<(), #error> {
@@ -329,6 +336,8 @@ fn impl_immediate_run<'a>(
 }
 
 struct ProviderConfig<'a> {
+    of: TokenStream,
+    error: TokenStream,
     provider: ProviderAttr,
     fields: Vec<ProviderField<'a>>,
 }
@@ -342,8 +351,8 @@ struct ProviderField<'a> {
 /// #[provider(...)] attribute
 #[derive(Debug, FromMeta)]
 struct ProviderAttr {
+    of: String,
     constructor: String,
-    output: String,
     error: String,
 }
 
