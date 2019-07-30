@@ -6,7 +6,7 @@ use futures::{
     ready,
     stream::{self, StreamExt as _},
 };
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashMap;
 use parking_lot::{Mutex, RwLock};
 use std::{
     any::{Any, TypeId},
@@ -48,8 +48,6 @@ impl error::Error for Error {}
 
 /// Use for sending information on updates.
 struct Sender {
-    /// Unique id for this sender.
-    id: u32,
     tx: mpsc::UnboundedSender<Option<Box<dyn Any + Send + Sync + 'static>>>,
 }
 
@@ -87,13 +85,43 @@ impl<T> stream::FusedStream for Stream<T> {
 
 #[derive(Default)]
 struct Storage {
-    id: u32,
-    storage: HashMap<RawKey, Box<dyn Any + Send + Sync + 'static>>,
-    subs: HashMap<RawKey, Vec<Sender>>,
+    value: Option<Box<dyn Any + Send + Sync + 'static>>,
+    subs: Vec<Sender>,
+}
+
+impl Storage {
+    /// Try to perform a send, or clean up if one fails.
+    fn try_send<S>(&mut self, send: S)
+    where
+        S: Fn() -> Option<Box<dyn Any + Send + Sync + 'static>>,
+    {
+        // Local collection of disconnected subscriptions to delete.
+        // TODO: handle this in driver instead.
+        let mut to_delete = smallvec::SmallVec::<[usize; 16]>::new();
+
+        for (idx, s) in self.subs.iter().enumerate() {
+            if let Err(e) = s.tx.unbounded_send(send()) {
+                if e.is_disconnected() {
+                    to_delete.push(idx);
+                    continue;
+                }
+
+                log::warn!("failed to send resource update: {}", e);
+            }
+        }
+
+        if to_delete.is_empty() {
+            return;
+        }
+
+        for (c, idx) in to_delete.into_iter().enumerate() {
+            let _ = self.subs.swap_remove(idx.saturating_sub(c));
+        }
+    }
 }
 
 struct Inner {
-    storage: RwLock<Storage>,
+    storage: RwLock<HashMap<RawKey, Storage>>,
     /// Channel where new drivers are sent.
     drivers: mpsc::UnboundedSender<Driver>,
     /// Receiver for drivers. Used by the run function.
@@ -134,13 +162,19 @@ impl Injector {
         T: Clone + Any + Send + Sync + 'static,
     {
         let key = key.as_raw_key();
+
         let mut storage = self.inner.storage.write();
 
-        if let None = storage.storage.remove(&key) {
+        let storage = match storage.get_mut(&key) {
+            Some(storage) => storage,
+            None => return,
+        };
+
+        if let None = storage.value.take() {
             return;
         }
 
-        self.try_send(&mut *storage, &key, || None);
+        storage.try_send(|| None);
     }
 
     /// Set the given value and notify any subscribers.
@@ -158,8 +192,9 @@ impl Injector {
     {
         let key = key.as_raw_key();
         let mut storage = self.inner.storage.write();
-        self.try_send(&mut *storage, &key, || Some(Box::new(value.clone())));
-        storage.storage.insert(key, Box::new(value));
+        let storage = storage.entry(key).or_default();
+        storage.try_send(|| Some(Box::new(value.clone())));
+        storage.value = Some(Box::new(value));
     }
 
     /// Get a value from the injector.
@@ -176,14 +211,14 @@ impl Injector {
         T: Any + Send + Sync + 'static + Clone,
     {
         let key = key.as_raw_key();
-        let storage = self.inner.storage.read();
 
-        match storage.storage.get(&key) {
-            Some(value) => match value.downcast_ref::<T>() {
-                Some(value) => Some(value.clone()),
-                None => panic!("downcast failed"),
-            },
-            None => None,
+        let storage = self.inner.storage.read();
+        let storage = storage.get(&key)?;
+        let value = storage.value.as_ref()?;
+
+        match value.downcast_ref::<T>() {
+            Some(value) => Some(value.clone()),
+            None => panic!("downcast failed"),
         }
     }
 
@@ -201,21 +236,22 @@ impl Injector {
         T: Any + Send + Sync + 'static + Clone,
     {
         let key = key.as_raw_key();
-        let mut storage = self.inner.storage.write();
 
-        let value = match storage.storage.get(&key) {
-            Some(value) => match value.downcast_ref::<T>() {
-                Some(value) => Some(value.clone()),
-                None => panic!("downcast failed"),
-            },
-            None => None,
-        };
-
-        let id = storage.id;
-        storage.id += 1;
         let (tx, rx) = mpsc::unbounded();
 
-        storage.subs.entry(key).or_default().push(Sender { id, tx });
+        let value = {
+            let mut storage = self.inner.storage.write();
+            let storage = storage.entry(key).or_default();
+            storage.subs.push(Sender { tx: tx.clone() });
+
+            match storage.value.as_ref() {
+                Some(value) => match value.downcast_ref::<T>() {
+                    Some(value) => Some(value.clone()),
+                    None => panic!("downcast failed"),
+                },
+                None => None,
+            }
+        };
 
         let stream = Stream {
             rx,
@@ -262,45 +298,6 @@ impl Injector {
         }
 
         Ok(value)
-    }
-
-    /// Try to perform a send, or clean up if one fails.
-    fn try_send<S>(&self, storage: &mut Storage, key: &RawKey, send: S)
-    where
-        S: Fn() -> Option<Box<dyn Any + Send + Sync + 'static>>,
-    {
-        // Local collection of disconnected subscriptions to delete.
-        // TODO: handle this in driver instead.
-        let mut to_delete = smallvec::SmallVec::<[u32; 16]>::new();
-
-        if let Some(subs) = storage.subs.get(key) {
-            for s in subs {
-                if let Err(e) = s.tx.unbounded_send(send()) {
-                    if e.is_disconnected() {
-                        to_delete.push(s.id);
-                        continue;
-                    }
-
-                    log::warn!("failed to send resource update: {}", e);
-                }
-            }
-        }
-
-        if to_delete.is_empty() {
-            return;
-        }
-
-        let to_delete = to_delete.into_iter().collect::<HashSet<_>>();
-
-        if let Some(subs) = storage.subs.get_mut(key) {
-            let new_subs = subs
-                .drain(..)
-                .into_iter()
-                .filter(|s| !to_delete.contains(&s.id))
-                .collect();
-
-            *subs = new_subs;
-        }
     }
 
     /// Run the injector as a future, making sure all asynchronous processes
