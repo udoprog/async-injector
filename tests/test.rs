@@ -2,8 +2,7 @@
 
 use futures::prelude::*;
 
-use async_injector::{Injector, Key};
-use async_injector_derive::Provider;
+use async_injector::{Injector, Key, Provider};
 
 /// Test that clear and build is infallible in case error is not specified.
 #[allow(unused)]
