@@ -5,6 +5,29 @@ use futures::prelude::*;
 use async_injector::{Injector, Key};
 use async_injector_derive::Provider;
 
+/// Test that clear and build is infallible in case error is not specified.
+#[allow(unused)]
+#[derive(Provider)]
+#[provider(constructor = "build", clear = "clear")]
+struct TestNoError {
+    #[dependency]
+    foo: String,
+    #[dependency(tag = "bar")]
+    bar: String,
+}
+
+impl TestNoError {
+    #[allow(unused)]
+    async fn clear(injector: &Injector) {
+        injector.clear::<Foo>();
+    }
+
+    #[allow(unused)]
+    async fn build(self, injector: &Injector) {
+        injector.update(Foo(None, self.foo, self.bar));
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Foo(Option<String>, String, String);
 
@@ -57,7 +80,7 @@ fn test_something() {
     });
 
     #[derive(Provider)]
-    #[provider(of = "Foo", constructor = "build", error = "()")]
+    #[provider(constructor = "build", clear = "clear", error = "()")]
     struct Test {
         fixed: String,
         /// Dependency to untagged foo.
@@ -69,8 +92,14 @@ fn test_something() {
     }
 
     impl Test {
-        async fn build(self) -> Result<Foo, ()> {
-            Ok(Foo(Some(self.fixed), self.foo, self.bar))
+        async fn clear(injector: &Injector) -> Result<(), ()> {
+            injector.clear::<Foo>();
+            Ok(())
+        }
+
+        async fn build(self, injector: &Injector) -> Result<(), ()> {
+            injector.update(Foo(Some(self.fixed), self.foo, self.bar));
+            Ok(())
         }
     }
 }
@@ -118,7 +147,7 @@ fn test_immediate_run() {
     });
 
     #[derive(Provider)]
-    #[provider(of = "Foo", constructor = "build", error = "()")]
+    #[provider(constructor = "build", clear = "clear", error = "()")]
     struct Test {
         #[dependency]
         foo: String,
@@ -128,8 +157,14 @@ fn test_immediate_run() {
     }
 
     impl Test {
-        async fn build(self) -> Result<Foo, ()> {
-            Ok(Foo(None, self.foo, self.bar))
+        async fn clear(injector: &Injector) -> Result<(), ()> {
+            injector.clear::<Foo>();
+            Ok(())
+        }
+
+        async fn build(self, injector: &Injector) -> Result<(), ()> {
+            injector.update(Foo(None, self.foo, self.bar));
+            Ok(())
         }
     }
 }

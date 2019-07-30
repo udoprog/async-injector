@@ -64,21 +64,37 @@ fn provider_config<'a>(ast: &'a DeriveInput, st: &'a DataStruct) -> ProviderConf
         }
     }
 
-    let provider = match provider {
-        Some(provider) => provider,
-        None => panic!("missing #[provider(..)] attribute"),
+    let (error, clear, constructor) = match provider {
+        Some(ProviderAttr {
+            ref error,
+            ref clear,
+            ref constructor,
+        }) => (error.as_ref(), clear.as_ref(), constructor.as_ref()),
+        None => (None, None, None),
     };
 
-    let of = syn::parse_str::<TokenStream>(&provider.of).expect("of: to be valid expression");
+    let error = match error {
+        Some(error) => {
+            Some(syn::parse_str::<TokenStream>(error).expect("error: to be valid expression"))
+        }
+        None => None,
+    };
 
-    let error =
-        syn::parse_str::<TokenStream>(&provider.error).expect("error: to be valid expression");
+    let clear = match clear {
+        Some(clear) => Ident::new(clear, Span::call_site()),
+        None => Ident::new("clear", Span::call_site()),
+    };
+
+    let constructor = match constructor {
+        Some(constructor) => Ident::new(constructor, Span::call_site()),
+        None => Ident::new("build", Span::call_site()),
+    };
 
     ProviderConfig {
-        of,
         error,
-        provider,
         fields,
+        clear,
+        constructor,
     }
 }
 
@@ -206,15 +222,17 @@ fn impl_factory<'a>(
 ) -> (TokenStream, Ident) {
     let factory_ident = Ident::new(&format!("{}Factory", ident), Span::call_site());
 
-    let of = &config.of;
-    let error = &config.error;
-
     let mut provider_fields = Vec::new();
     let mut injected_fields_init = Vec::new();
     let mut injected_update = Vec::new();
     let mut provider_extract = Vec::new();
     let mut provider_clone = Vec::new();
     let mut initialized_fields = Vec::new();
+
+    let wait = match &config.error {
+        Some(_) => quote!(await?),
+        None => quote!(await),
+    };
 
     for f in &config.fields {
         let field_ident = &f.ident;
@@ -231,11 +249,13 @@ fn impl_factory<'a>(
                 }
             });
 
+            let clear = &config.clear;
+
             provider_extract.push(quote! {
                 let #field_ident = match self.#field_ident.as_ref() {
                     Some(#field_ident) => #field_ident,
                     None => {
-                        injector.clear::<#of>();
+                        #ident::#clear(&injector__).#wait;
                         continue;
                     },
                 };
@@ -252,7 +272,7 @@ fn impl_factory<'a>(
             };
 
             injected_fields_init.push(quote! {
-                let (mut #field_stream, #field_ident) = injector.stream_key::<#field_ty>(&#key);
+                let (mut #field_stream, #field_ident) = injector__.stream_key::<#field_ty>(&#key);
                 self.#field_ident = #field_ident;
             });
         } else {
@@ -266,13 +286,19 @@ fn impl_factory<'a>(
         initialized_fields.push(quote!(#field_ident,));
     }
 
-    let constructor = Ident::new(&config.provider.constructor, Span::call_site());
+    let constructor = &config.constructor;
 
     let provider_construct = quote! {
         let builder = #ident {
             #(#initialized_fields)*
         };
-        injector.update(builder.#constructor().await?);
+
+        builder.#constructor(injector__).#wait;
+    };
+
+    let run_ret = match &config.error {
+        Some(error) => quote!(Result<(), #error>),
+        None => quote!(()),
     };
 
     let factory = quote! {
@@ -281,7 +307,7 @@ fn impl_factory<'a>(
         }
 
         impl #factory_ident {
-            pub async fn run(mut self, injector: &::async_injector::Injector) -> Result<(), #error> {
+            pub async fn run(mut self, injector__: &::async_injector::Injector) -> #run_ret {
                 use ::futures::stream::StreamExt as _;
 
                 #(#injected_fields_init)*
@@ -320,15 +346,18 @@ fn impl_immediate_run<'a>(
         }
     }
 
-    let error = &config.error;
+    let run_ret = match &config.error {
+        Some(error) => quote!(Result<(), #error>),
+        None => quote!(()),
+    };
 
     let run = quote! {
-        pub async fn run(injector: &::async_injector::Injector) -> Result<(), #error> {
+        pub async fn run(injector__: &::async_injector::Injector) -> #run_ret {
             let mut provider = #factory_ident {
                 #(#field_idents,)*
             };
 
-            provider.run(injector).await
+            provider.run(injector__).await
         }
     };
 
@@ -336,10 +365,10 @@ fn impl_immediate_run<'a>(
 }
 
 struct ProviderConfig<'a> {
-    of: TokenStream,
-    error: TokenStream,
-    provider: ProviderAttr,
+    error: Option<TokenStream>,
     fields: Vec<ProviderField<'a>>,
+    clear: Ident,
+    constructor: Ident,
 }
 
 struct ProviderField<'a> {
@@ -351,9 +380,12 @@ struct ProviderField<'a> {
 /// #[provider(...)] attribute
 #[derive(Debug, FromMeta)]
 struct ProviderAttr {
-    of: String,
-    constructor: String,
-    error: String,
+    #[darling(default)]
+    clear: Option<String>,
+    #[darling(default)]
+    constructor: Option<String>,
+    #[darling(default)]
+    error: Option<String>,
 }
 
 /// #[dependency(...)] attribute

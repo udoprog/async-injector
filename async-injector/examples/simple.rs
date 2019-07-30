@@ -20,7 +20,6 @@ struct Thing {
 
 /// Provider that describes how to construct a `Thing`.
 #[derive(Provider)]
-#[provider(of = "Thing", constructor = "build", error = "Error")]
 struct ThingProvider {
     #[dependency(tag = "title")]
     title: String,
@@ -29,11 +28,15 @@ struct ThingProvider {
 }
 
 impl ThingProvider {
-    pub async fn build(self) -> Result<Thing, Error> {
-        Ok(Thing {
+    async fn clear(injector: &Injector) {
+        injector.clear::<Thing>();
+    }
+
+    async fn build(self, injector: &Injector) {
+        injector.update(Thing {
             title: self.title,
             db: self.db,
-        })
+        });
     }
 }
 
@@ -85,7 +88,11 @@ fn main() -> Result<(), Error> {
         let mut futures: Vec<Pin<Box<dyn Future<Output = Result<(), Error>>>>> = Vec::new();
 
         // Provides `Thing`.
-        futures.push(Box::pin(ThingProvider::run(&injector)));
+        futures.push(Box::pin(async {
+            ThingProvider::run(&injector).await;
+            Ok(())
+        }));
+
         // Keeps synchronized variables up-to-date.
         futures.push(Box::pin(injector.clone().drive().map_err(Into::into)));
 
