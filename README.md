@@ -19,9 +19,9 @@ your application dynamically from changes in your dependencies.
 Using an `Injector` to deal with this complexity provides a nice option for a
 clean architecture.
 
-It also provides a natural way for structuring an application that gracefully
+An injector is also a natural way for structuring an application that gracefully
 degrades during the absence of configuration: any part of the dependency tree
-that is not available can simply not be configured.
+that is not available can simply not be provided.
 
 [`OxidizeBot`]: https://github.com/udoprog/OxidizeBot
 
