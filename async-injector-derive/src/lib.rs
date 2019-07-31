@@ -27,20 +27,23 @@ fn implement(ast: &DeriveInput) -> TokenStream {
     let maybe_run = impl_immediate_run(&config, &factory_ident);
 
     let ident = &ast.ident;
+    let generics = &ast.generics;
 
-    quote! {
+    let output = quote! {
         #builder
 
         #factory
 
-        impl #ident {
+        impl#generics #ident#generics {
             #maybe_run
 
-            pub fn builder() -> #builder_ident {
+            pub fn builder() -> #builder_ident#generics {
                 #builder_ident::new()
             }
         }
-    }
+    };
+
+    output
 }
 
 /// Build a provider configuration.
@@ -95,6 +98,7 @@ fn provider_config<'a>(ast: &'a DeriveInput, st: &'a DataStruct) -> ProviderConf
         fields,
         clear,
         constructor,
+        generics: &ast.generics,
     }
 }
 
@@ -188,19 +192,21 @@ fn impl_builder<'a>(
         }
     }
 
+    let generics = &config.generics;
+
     let builder = quote! {
-        #vis struct #ident {
+        #vis struct #ident#generics {
             #(#builder_fields)*
         }
 
-        impl #ident {
+        impl#generics #ident#generics {
             pub fn new() -> Self {
                 Self {
                     #(#builder_inits)*
                 }
             }
 
-            pub fn build(self) -> #factory_ident {
+            pub fn build(self) -> #factory_ident#generics {
                 #(#builder_assign)*
 
                 #factory_ident {
@@ -236,34 +242,17 @@ fn impl_factory<'a>(
 
     for f in &config.fields {
         let field_ident = &f.ident;
-        let field_ty = &f.field.ty;
 
         let field_stream = Ident::new(&format!("{}_stream", field_ident), Span::call_site());
 
         if let Some(dependency) = &f.dependency {
+            let field_ty = if dependency.optional {
+                optional_ty(&f.field.ty)
+            } else {
+                &f.field.ty
+            };
+
             provider_fields.push(quote!(#field_ident: Option<#field_ty>,));
-
-            injected_update.push(quote! {
-                #field_ident = #field_stream.select_next_some() => {
-                    self.#field_ident = #field_ident;
-                }
-            });
-
-            let clear = &config.clear;
-
-            provider_extract.push(quote! {
-                let #field_ident = match self.#field_ident.as_ref() {
-                    Some(#field_ident) => #field_ident,
-                    None => {
-                        #ident::#clear(&injector__).#wait;
-                        continue;
-                    },
-                };
-            });
-
-            provider_clone.push(quote! {
-                let #field_ident = #field_ident.clone();
-            });
 
             let key = if let Some(tag) = &dependency.tag {
                 quote!(::async_injector::Key::<#field_ty>::tagged(#tag))
@@ -275,7 +264,44 @@ fn impl_factory<'a>(
                 let (mut #field_stream, #field_ident) = injector__.stream_key::<#field_ty>(&#key);
                 self.#field_ident = #field_ident;
             });
+
+            injected_update.push(quote! {
+                #field_ident = #field_stream.select_next_some() => {
+                    self.#field_ident = #field_ident;
+                }
+            });
+
+            let clear = &config.clear;
+
+            if dependency.optional {
+                provider_extract.push(quote! {
+                    let #field_ident = match self.#field_ident.as_ref() {
+                        Some(#field_ident) => Some(#field_ident),
+                        None => None,
+                    };
+                });
+
+                provider_clone.push(quote! {
+                    let #field_ident: Option<String> = #field_ident.map(Clone::clone);
+                });
+            } else {
+                provider_extract.push(quote! {
+                    let #field_ident = match self.#field_ident.as_ref() {
+                        Some(#field_ident) => #field_ident,
+                        None => {
+                            #ident::#clear(&injector__).#wait;
+                            continue;
+                        },
+                    };
+                });
+
+                provider_clone.push(quote! {
+                    let #field_ident = #field_ident.clone();
+                });
+            };
         } else {
+            let field_ty = &f.field.ty;
+
             provider_fields.push(quote!(#field_ident: #field_ty,));
 
             provider_clone.push(quote! {
@@ -301,12 +327,14 @@ fn impl_factory<'a>(
         None => quote!(()),
     };
 
+    let generics = &config.generics;
+
     let factory = quote! {
-        #vis struct #factory_ident {
+        #vis struct #factory_ident#generics {
             #(#provider_fields)*
         }
 
-        impl #factory_ident {
+        impl#generics #factory_ident#generics {
             pub async fn run(mut self, injector__: &::async_injector::Injector) -> #run_ret {
                 use ::futures::stream::StreamExt as _;
 
@@ -327,6 +355,34 @@ fn impl_factory<'a>(
     };
 
     (factory, factory_ident)
+}
+
+/// Extract the optional type argument from the given type.
+fn optional_ty(ty: &Type) -> &Type {
+    match ty {
+        Type::Path(ref path) => {
+            let last = path.path.segments.last().expect("missing path segment").into_value();
+
+            if last.ident != "Option" {
+                panic!("optional field must be of type: Option<T>");
+            }
+
+            let arguments = match &last.arguments {
+                PathArguments::AngleBracketed(ref arguments) => &arguments.args,
+                other => panic!("bad path arguments: {:?}", other),
+            };
+
+            let first = arguments.iter().next().expect("at least one argument");
+
+            match first {
+                GenericArgument::Type(ref ty) => return ty,
+                _ => panic!("expected type generic argument"),
+            }
+        }
+        _ => {
+            panic!("expected optional type to be a path");
+        }
+    }
 }
 
 /// Constructs an immediate run implementation if there are no fixed dependencies.
@@ -369,6 +425,7 @@ struct ProviderConfig<'a> {
     fields: Vec<ProviderField<'a>>,
     clear: Ident,
     constructor: Ident,
+    generics: &'a Generics,
 }
 
 struct ProviderField<'a> {
@@ -393,4 +450,5 @@ struct ProviderAttr {
 #[darling(default)]
 struct DependencyAttr {
     tag: Option<String>,
+    optional: bool,
 }
