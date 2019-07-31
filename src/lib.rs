@@ -23,6 +23,25 @@ use std::{
 extern crate async_injector_derive;
 #[doc(hidden)]
 pub use self::async_injector_derive::*;
+pub use async_trait::async_trait;
+
+#[async_trait]
+pub trait Provider
+where
+    Self: Sized,
+{
+    type Output;
+
+    /// What to do when you want to clear the value.
+    async fn clear() -> Option<Self::Output> {
+        None
+    }
+
+    /// What to do when we construct a value.
+    async fn build(self) -> Option<Self::Output> {
+        None
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum Error {

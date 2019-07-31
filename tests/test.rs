@@ -2,7 +2,7 @@
 
 use futures::prelude::*;
 
-use async_injector::{Injector, Key, Provider};
+use async_injector::{async_trait, Injector, Key, Provider};
 
 #[allow(unused)]
 #[derive(Provider)]
@@ -11,48 +11,9 @@ struct TestPlain {
     foo: String,
 }
 
-impl TestPlain {
-    #[allow(unused)]
-    async fn clear(injector: &Injector) {}
-
-    #[allow(unused)]
-    async fn build(self, injector: &Injector) {}
-}
-
-#[allow(unused)]
-#[derive(Provider)]
-#[provider(error = "&'static str")]
-struct TestFallible {
-    #[dependency]
-    foo: String,
-}
-
-impl TestFallible {
-    #[allow(unused)]
-    async fn clear(injector: &Injector) -> Result<(), &'static str> {
-        Ok(())
-    }
-
-    #[allow(unused)]
-    async fn build(self, injector: &Injector) -> Result<(), &'static str> {
-        Ok(())
-    }
-}
-
-#[allow(unused)]
-#[derive(Provider)]
-#[provider(constructor = "build2", clear = "clear2")]
-struct TestCustomHooks {
-    #[dependency]
-    foo: String,
-}
-
-impl TestCustomHooks {
-    #[allow(unused)]
-    async fn clear2(injector: &Injector) {}
-
-    #[allow(unused)]
-    async fn build2(self, injector: &Injector) {}
+#[async_trait]
+impl Provider for TestPlain {
+    type Output = ();
 }
 
 #[allow(unused)]
@@ -62,12 +23,9 @@ struct TestTagged {
     foo: String,
 }
 
-impl TestTagged {
-    #[allow(unused)]
-    async fn clear(injector: &Injector) {}
-
-    #[allow(unused)]
-    async fn build(self, injector: &Injector) {}
+#[async_trait]
+impl Provider for TestTagged {
+    type Output = ();
 }
 
 #[allow(unused)]
@@ -78,12 +36,9 @@ struct TestFixed {
     foo: String,
 }
 
-impl TestFixed {
-    #[allow(unused)]
-    async fn clear(injector: &Injector) {}
-
-    #[allow(unused)]
-    async fn build(self, injector: &Injector) {}
+#[async_trait]
+impl Provider for TestFixed {
+    type Output = ();
 }
 
 #[allow(unused)]
@@ -94,12 +49,9 @@ struct TestFixedLt<'a> {
     foo: String,
 }
 
-impl<'a> TestFixedLt<'a> {
-    #[allow(unused)]
-    async fn clear(injector: &Injector) {}
-
-    #[allow(unused)]
-    async fn build(self, injector: &Injector) {}
+#[async_trait]
+impl<'a> Provider for TestFixedLt<'a> {
+    type Output = ();
 }
 
 #[allow(unused)]
@@ -109,12 +61,9 @@ struct TestOptional {
     foo: Option<String>,
 }
 
-impl TestOptional {
-    #[allow(unused)]
-    async fn clear(injector: &Injector) {}
-
-    #[allow(unused)]
-    async fn build(self, injector: &Injector) {}
+#[async_trait]
+impl Provider for TestOptional {
+    type Output = ();
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,13 +128,12 @@ fn test_something() {
         bar: String,
     }
 
-    impl<'a> Test<'a> {
-        async fn clear(injector: &Injector) {
-            injector.clear::<Foo>();
-        }
+    #[async_trait]
+    impl<'a> Provider for Test<'a> {
+        type Output = Foo;
 
-        async fn build(self, injector: &Injector) {
-            injector.update(Foo(Some(self.fixed.to_string()), self.foo, self.bar));
+        async fn build(self) -> Option<Self::Output> {
+            Some(Foo(Some(self.fixed.to_string()), self.foo, self.bar))
         }
     }
 }

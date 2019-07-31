@@ -1,6 +1,6 @@
 #![feature(async_await)]
 
-use async_injector::{Injector, Key, Provider};
+use async_injector::{async_trait, Injector, Key, Provider};
 use failure::Error;
 use futures::prelude::*;
 use std::{pin::Pin, sync::Arc};
@@ -27,16 +27,15 @@ struct ThingProvider {
     db: Arc<Database>,
 }
 
-impl ThingProvider {
-    async fn clear(injector: &Injector) {
-        injector.clear::<Thing>();
-    }
+#[async_trait]
+impl Provider for ThingProvider {
+    type Output = Thing;
 
-    async fn build(self, injector: &Injector) {
-        injector.update(Thing {
+    async fn build(self) -> Option<Self::Output> {
+        Some(Thing {
             title: self.title,
             db: self.db,
-        });
+        })
     }
 }
 

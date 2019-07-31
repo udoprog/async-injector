@@ -34,7 +34,7 @@ over HTTP.
 #![feature(async_await)]
 
 use failure::Error;
-use async_injector::{Provider, Injector, Key};
+use async_injector::{Provider, Injector, Key, async_trait};
 
 /// Provider that describes how to construct a database.
 #[derive(Provider)]
@@ -45,24 +45,19 @@ struct DatabaseProvider {
     connection_limit: u32,
 }
 
-impl DatabaseProvider {
-    /// Not all dependencies are available.
-    async fn clear(injector: &Injector) {
-        injector.clear::<Database>();
-    }
+#[async_trait]
+impl Provider for DatabaseProvider {
+    type Output = Database;
 
     /// Constructor a new database and supply it to the injector.
-    async fn build(self, injector: &Injector) {
-        let database = match Database::connect(&self.url, self.connection_limit).await {
-            Ok(database) => database,
+    async fn build(self) -> Option<Self::Output> {
+        match Database::connect(&self.url, self.connection_limit).await {
+            Ok(database) => Some(database),
             Err(e) => {
-                log::warn!("failed to connect to database: {}", self.url);
-                injector.clear::<Database>();
-                return;
+                log::warn!("failed to connect to database: {}: {}", self.url, e);
+                None
             }
         }
-
-        injector.update(database);
     }
 }
 
