@@ -19,6 +19,8 @@ smallvec = "0.6.10"
 log = "0.4.7"
 async-injector-derive = { version = "0.1.0", path = "./async-injector-derive" }
 async-trait = "0.1.6"
+serde-hashkey = "0.2.0"
+serde = { version = "1.0.98", features = ["derive"] }
 
 [dependencies.futures]
 package = "futures-preview"

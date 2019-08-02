@@ -2,7 +2,12 @@
 
 use futures::prelude::*;
 
-use async_injector::{async_trait, Injector, Key, Provider};
+use async_injector::{async_trait, Error, Injector, Key, Provider};
+
+#[derive(serde::Serialize)]
+pub enum Tag {
+    A,
+}
 
 #[allow(unused)]
 #[derive(Provider)]
@@ -19,8 +24,20 @@ impl Provider for TestPlain {
 #[allow(unused)]
 #[derive(Provider)]
 struct TestTagged {
-    #[dependency(tag = "bar")]
-    foo: String,
+    fixed: String,
+    #[dependency(tag = "\"bar\"")]
+    tag0: String,
+    #[dependency(tag = "TestTagged::bar_tag(&fixed)")]
+    tag1: String,
+    #[dependency(tag = "42")]
+    tag2: String,
+}
+
+impl TestTagged {
+    #[allow(unused)]
+    fn bar_tag(fixed: &str) -> Tag {
+        Tag::A
+    }
 }
 
 #[async_trait]
@@ -32,7 +49,7 @@ impl Provider for TestTagged {
 #[derive(Provider)]
 struct TestFixed {
     fixed: String,
-    #[dependency(tag = "bar")]
+    #[dependency(tag = "\"bar\"")]
     foo: String,
 }
 
@@ -45,7 +62,7 @@ impl Provider for TestFixed {
 #[derive(Provider)]
 struct TestFixedLt<'a> {
     fixed: &'a str,
-    #[dependency(tag = "bar")]
+    #[dependency(tag = "\"bar\"")]
     foo: String,
 }
 
@@ -70,12 +87,13 @@ impl Provider for TestOptional {
 struct Foo(Option<String>, String, String);
 
 #[test]
-fn test_something() {
+fn test_something() -> Result<(), Error> {
     let injector = Injector::new();
 
-    futures::executor::block_on(async move {
-        let bar_key = Key::<String>::tagged("bar");
+    let bar_key = Key::<String>::tagged("bar")?;
+    let driver = Test::builder().fixed("fixed").build()?;
 
+    futures::executor::block_on(async move {
         let mut finished = false;
 
         let test = Box::pin(async {
@@ -108,7 +126,6 @@ fn test_something() {
         });
 
         // Driver responsible for updating `Foo`.
-        let driver = Test::builder().fixed("fixed").build();
         let driver = Box::pin(driver.run(&injector));
 
         let future = futures::future::select(driver, test);
@@ -117,6 +134,8 @@ fn test_something() {
         assert!(finished);
     });
 
+    return Ok(());
+
     #[derive(Provider)]
     struct Test<'a> {
         fixed: &'a str,
@@ -124,7 +143,7 @@ fn test_something() {
         #[dependency]
         foo: String,
         /// Dependency to tagged bar.
-        #[dependency(tag = "bar")]
+        #[dependency(tag = "\"bar\"")]
         bar: String,
     }
 

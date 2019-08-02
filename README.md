@@ -39,9 +39,9 @@ use async_injector::{Provider, Injector, Key, async_trait};
 /// Provider that describes how to construct a database.
 #[derive(Provider)]
 struct DatabaseProvider {
-    #[dependency(tag = "database/url")]
+    #[dependency(tag = "\"database/url\"")]
     url: String,
-    #[dependency(tag = "database/connection-limit")]
+    #[dependency(tag = "\"database/connection-limit\"")]
     connection_limit: u32,
 }
 

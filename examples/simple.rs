@@ -21,7 +21,7 @@ struct Thing {
 /// Provider that describes how to construct a `Thing`.
 #[derive(Provider)]
 struct ThingProvider {
-    #[dependency(tag = "title")]
+    #[dependency(tag = "\"title\"")]
     title: String,
     #[dependency]
     db: Arc<Database>,
@@ -45,11 +45,11 @@ fn main() -> Result<(), Error> {
     let injector = Injector::new();
     let thread_injector = injector.clone();
 
+    let title_key = Key::<String>::tagged("title")?;
+
     // A separate thread which updates values in the injector once in a while.
     let t = thread::spawn(move || {
         let injector = thread_injector;
-
-        let title_key = Key::<String>::tagged("title");
 
         // Nothing will happen, since we don't have all the dependencies.
         thread::sleep(Duration::from_secs(1));
@@ -88,7 +88,9 @@ fn main() -> Result<(), Error> {
 
         // Provides `Thing`.
         futures.push(Box::pin(async {
-            ThingProvider::run(&injector).await;
+            ThingProvider::run(&injector)
+                .await
+                .expect("injector not to error");
             Ok(())
         }));
 
