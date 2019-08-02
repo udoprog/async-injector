@@ -24,7 +24,7 @@ fn implement(ast: &DeriveInput) -> TokenStream {
     let config = provider_config(ast, st);
     let (factory, factory_ident) = impl_factory(&ast.vis, &ast.ident, &config);
     let (builder, builder_ident) = impl_builder(&ast.vis, &ast.ident, &factory_ident, &config);
-    let maybe_run = impl_immediate_run(&config, &factory_ident);
+    let maybe_run = impl_immediate_run(&config);
 
     let ident = &ast.ident;
     let generics = &ast.generics;
@@ -89,6 +89,23 @@ fn provider_fields<'a>(st: &'a DataStruct) -> Vec<ProviderField<'a>> {
             }
         }
 
+        let dependency = match dependency {
+            Some(dep) => Some(Dependency {
+                tag: match dep.tag {
+                    Some(tag) => Some(syn::parse_str::<TokenStream>(&tag).expect("`tag` to be valid expression")),
+                    None => None,
+                },
+                optional: dep.optional,
+                key_field: Ident::new(&format!("__key__{}", ident), Span::call_site()),
+                ty: if dep.optional {
+                    optional_ty(&field.ty)
+                } else {
+                    &field.ty
+                },
+            }),
+            None => None,
+        };
+
         fields.push(ProviderField {
             ident: &ident,
             field: &field,
@@ -116,17 +133,29 @@ fn impl_builder<'a>(
 
     for f in &config.fields {
         let field_ident = &f.ident;
-        let field_ty = &f.field.ty;
 
         field_idents.push(f.ident.clone());
 
-        if let Some(_dependency) = &f.dependency {
+        if let Some(dep) = &f.dependency {
+            let field_ty = &dep.ty;
+
             builder_fields.push(quote!(#field_ident: Option<#field_ty>,));
             builder_inits.push(quote!(#field_ident: None,));
             builder_assign.push(quote! {
                 let #field_ident = None;
             });
+
+            let key = match &dep.tag {
+                Some(tag) => quote!(::async_injector::Key::<#field_ty>::tagged(#tag)?),
+                None => quote!(::async_injector::Key::<#field_ty>::of()),
+            };
+
+            let key_ident = &dep.key_field;
+            builder_assign.push(quote!(let #key_ident = #key;));
+            field_idents.push(key_ident.clone());
         } else {
+            let field_ty = &f.field.ty;
+
             builder_fields.push(quote!(#field_ident: Option<#field_ty>,));
             builder_inits.push(quote!(#field_ident: None,));
             builder_setters.push(quote! {
@@ -160,12 +189,12 @@ fn impl_builder<'a>(
                 }
             }
 
-            pub fn build(self) -> #factory_ident#generics {
+            pub fn build(self) -> Result<#factory_ident#generics, ::async_injector::Error> {
                 #(#builder_assign)*
 
-                #factory_ident {
+                Ok(#factory_ident {
                     #(#field_idents,)*
-                }
+                })
             }
 
             #(#builder_setters)*
@@ -175,6 +204,13 @@ fn impl_builder<'a>(
     (builder, ident)
 }
 
+/// Build the factory instance.
+///
+/// The factory is responsible for building providers that builds instances of
+/// the provided type.
+///
+/// This step is necessary to support "fixed" fields, i.e. fields who's value
+/// are provided at build time.
 fn impl_factory<'a>(
     vis: &Visibility,
     ident: &Ident,
@@ -194,23 +230,15 @@ fn impl_factory<'a>(
 
         let field_stream = Ident::new(&format!("{}_stream", field_ident), Span::call_site());
 
-        if let Some(dependency) = &f.dependency {
-            let field_ty = if dependency.optional {
-                optional_ty(&f.field.ty)
-            } else {
-                &f.field.ty
-            };
+        if let Some(dep) = &f.dependency {
+            let field_ty = dep.ty;
+            let key_ident = &dep.key_field;
 
             provider_fields.push(quote!(#field_ident: Option<#field_ty>,));
-
-            let key = if let Some(tag) = &dependency.tag {
-                quote!(::async_injector::Key::<#field_ty>::tagged(#tag))
-            } else {
-                quote!(::async_injector::Key::<#field_ty>::of())
-            };
+            provider_fields.push(quote!(#key_ident: ::async_injector::Key<#field_ty>,));
 
             injected_fields_init.push(quote! {
-                let (mut #field_stream, #field_ident) = injector__.stream_key(&#key);
+                let (mut #field_stream, #field_ident) = __injector.stream_key(&self.#key_ident);
                 self.#field_ident = #field_ident;
             });
 
@@ -220,7 +248,7 @@ fn impl_factory<'a>(
                 }
             });
 
-            if dependency.optional {
+            if dep.optional {
                 provider_extract.push(quote! {
                     let #field_ident = match self.#field_ident.as_ref() {
                         Some(#field_ident) => Some(#field_ident),
@@ -237,8 +265,8 @@ fn impl_factory<'a>(
                         Some(#field_ident) => #field_ident,
                         None => {
                             match #ident::clear().await {
-                                Some(value) => injector__.update(value),
-                                None => injector__.clear::<<#ident as ::async_injector::Provider>::Output>(),
+                                Some(value) => __injector.update(value),
+                                None => __injector.clear::<<#ident as ::async_injector::Provider>::Output>(),
                             }
 
                             continue;
@@ -269,8 +297,8 @@ fn impl_factory<'a>(
         };
 
         match builder.build().await {
-            Some(value) => injector__.update(value),
-            None => injector__.clear::<<#ident as ::async_injector::Provider>::Output>(),
+            Some(value) => __injector.update(value),
+            None => __injector.clear::<<#ident as ::async_injector::Provider>::Output>(),
         }
     };
 
@@ -282,7 +310,7 @@ fn impl_factory<'a>(
         }
 
         impl#generics #factory_ident#generics {
-            pub async fn run(mut self, injector__: &::async_injector::Injector) {
+            pub async fn run(mut self, __injector: &::async_injector::Injector) -> Result<(), ::async_injector::Error> {
                 use ::futures::stream::StreamExt as _;
                 use ::async_injector::Provider as _;
 
@@ -336,27 +364,17 @@ fn optional_ty(ty: &Type) -> &Type {
 /// Constructs an immediate run implementation if there are no fixed dependencies.
 fn impl_immediate_run<'a>(
     config: &ProviderConfig<'a>,
-    factory_ident: &Ident,
 ) -> Option<TokenStream> {
-    let mut field_idents = Vec::new();
-
     for f in &config.fields {
-        let field_ident = &f.ident;
-
-        if f.dependency.is_some() {
-            field_idents.push(quote!(#field_ident: None));
-        } else {
+        if f.dependency.is_none() {
             return None;
         }
     }
 
     let run = quote! {
-        pub async fn run(injector__: &::async_injector::Injector) {
-            let mut provider = #factory_ident {
-                #(#field_idents,)*
-            };
-
-            provider.run(injector__).await
+        pub async fn run(__injector: &::async_injector::Injector) -> Result<(), ::async_injector::Error> {
+            let mut provider = Self::builder().build()?;
+            provider.run(__injector).await
         }
     };
 
@@ -371,13 +389,23 @@ struct ProviderConfig<'a> {
 struct ProviderField<'a> {
     ident: &'a Ident,
     field: &'a Field,
-    dependency: Option<DependencyAttr>,
+    dependency: Option<Dependency<'a>>,
+}
+
+#[derive(Debug)]
+struct Dependency<'a> {
+    /// Use a string tag.
+    tag: Option<TokenStream>,
+    optional: bool,
+    key_field: Ident,
+    ty: &'a Type,
 }
 
 /// #[dependency(...)] attribute
 #[derive(Debug, Default, FromMeta)]
 #[darling(default)]
 struct DependencyAttr {
+    /// Use a string tag.
     tag: Option<String>,
     optional: bool,
 }

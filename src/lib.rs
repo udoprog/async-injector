@@ -8,6 +8,7 @@ use futures::{
 };
 use hashbrown::HashMap;
 use parking_lot::{Mutex, RwLock};
+use serde_hashkey as hashkey;
 use std::{
     any::{Any, TypeId},
     error, fmt,
@@ -43,7 +44,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub enum Error {
     /// Failed to perform work due to injector shutting down.
     Shutdown,
@@ -51,6 +52,8 @@ pub enum Error {
     EndOfDriverStream,
     /// Driver already configured.
     DriverAlreadyConfigured,
+    /// Error when serializing key.
+    SerializationError(serde_hashkey::Error),
 }
 
 impl fmt::Display for Error {
@@ -59,11 +62,25 @@ impl fmt::Display for Error {
             Error::Shutdown => "injector is shutting down".fmt(fmt),
             Error::EndOfDriverStream => "end of driver stream".fmt(fmt),
             Error::DriverAlreadyConfigured => "driver already configured".fmt(fmt),
+            Error::SerializationError(..) => "serialization error".fmt(fmt),
         }
     }
 }
 
-impl error::Error for Error {}
+impl error::Error for Error {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        match self {
+            Error::SerializationError(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<serde_hashkey::Error> for Error {
+    fn from(value: serde_hashkey::Error) -> Self {
+        Error::SerializationError(value)
+    }
+}
 
 /// Use for sending information on updates.
 struct Sender {
@@ -357,10 +374,14 @@ impl Injector {
     }
 }
 
+/// Used to calculate the type-id of the empty key.
+enum Empty {}
+
 #[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
 pub struct RawKey {
     type_id: TypeId,
-    tag: Option<String>,
+    tag_type_id: TypeId,
+    tag: hashkey::Key,
 }
 
 #[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
@@ -369,7 +390,8 @@ where
     T: Any,
 {
     type_id: TypeId,
-    tag: Option<String>,
+    tag_type_id: TypeId,
+    tag: hashkey::Key,
     marker: std::marker::PhantomData<T>,
 }
 
@@ -381,24 +403,30 @@ where
     pub fn of() -> Self {
         Self {
             type_id: TypeId::of::<T>(),
-            tag: None,
+            tag_type_id: TypeId::of::<Empty>(),
+            tag: hashkey::Key::Unit,
             marker: std::marker::PhantomData,
         }
     }
 
     /// Construct a new key.
-    pub fn tagged(tag: &str) -> Self {
-        Self {
+    pub fn tagged<K>(tag: K) -> Result<Self, Error>
+    where
+        K: Any + serde::Serialize,
+    {
+        Ok(Self {
             type_id: TypeId::of::<T>(),
-            tag: Some(tag.to_owned()),
+            tag_type_id: TypeId::of::<K>(),
+            tag: hashkey::to_key(&tag)?,
             marker: std::marker::PhantomData,
-        }
+        })
     }
 
     /// Convert into a raw key.
-    pub fn as_raw_key(&self) -> RawKey {
+    fn as_raw_key(&self) -> RawKey {
         RawKey {
             type_id: self.type_id,
+            tag_type_id: self.tag_type_id,
             tag: self.tag.clone(),
         }
     }
