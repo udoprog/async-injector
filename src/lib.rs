@@ -341,8 +341,6 @@ impl Injector {
     ///
     /// This has to be called for the injector to perform important tasks.
     pub async fn drive(self) -> Result<(), Error> {
-        use futures::future;
-
         let mut rx = self
             .inner
             .drivers_rx
@@ -350,24 +348,17 @@ impl Injector {
             .take()
             .ok_or(Error::DriverAlreadyConfigured)?;
 
-        let mut drivers = Vec::new();
+        let mut drivers = stream::FuturesUnordered::new();
 
-        'outer: loop {
+        loop {
             while drivers.is_empty() {
                 drivers.push(rx.next().await.ok_or(Error::EndOfDriverStream)?);
             }
 
             while !drivers.is_empty() {
-                let either = future::select(rx.next(), future::select_all(&mut drivers)).await;
-
-                match either {
-                    future::Either::Left((driver, _)) => {
-                        let driver = driver.ok_or(Error::EndOfDriverStream)?;
-                        drivers.push(driver);
-                    }
-                    future::Either::Right(((_, index, _), _)) => {
-                        let _ = drivers.swap_remove(index);
-                    }
+                futures::select! {
+                    driver = rx.next() => drivers.push(driver.ok_or(Error::EndOfDriverStream)?),
+                    () = drivers.select_next_some() => (),
                 }
             }
         }
