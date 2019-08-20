@@ -113,7 +113,10 @@ where
     }
 }
 
-impl<T> stream::FusedStream for Stream<T> {
+impl<T> stream::FusedStream for Stream<T>
+where
+    T: Unpin + Any + Send + Sync + 'static,
+{
     fn is_terminated(&self) -> bool {
         false
     }

@@ -20,11 +20,11 @@ log = "0.4.8"
 async-injector-derive = { version = "0.2.0", path = "./async-injector-derive" }
 async-trait = "0.1.7"
 serde-hashkey = "0.2.0"
-serde = { version = "1.0.98", features = ["derive"] }
+serde = { version = "1.0.99", features = ["derive"] }
 
 [dependencies.futures]
 package = "futures-preview"
-version = "0.3.0-alpha.17"
+version = "0.3.0-alpha.18"
 features = ["nightly", "async-await"]
 
 [dev-dependencies]
