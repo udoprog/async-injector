@@ -1,4 +1,3 @@
-#![feature(async_await)]
 //! Asynchronous dependency injection for Rust.
 
 use futures::{
@@ -89,7 +88,7 @@ struct Sender {
 
 /// A stream of updates for values injected into this injector.
 pub struct Stream<T> {
-    rx: mpsc::UnboundedReceiver<Option<Box<dyn Any + Send + Sync + 'static>>>,
+    rx: stream::SelectAll<mpsc::UnboundedReceiver<Option<Box<dyn Any + Send + Sync + 'static>>>>,
     marker: marker::PhantomData<T>,
 }
 
@@ -165,6 +164,8 @@ struct Inner {
     drivers: mpsc::UnboundedSender<Driver>,
     /// Receiver for drivers. Used by the run function.
     drivers_rx: Mutex<Option<mpsc::UnboundedReceiver<Driver>>>,
+    /// Parent injector for the current injector.
+    parent: Option<Injector>,
 }
 
 /// Use for handling injection.
@@ -183,6 +184,21 @@ impl Injector {
                 storage: Default::default(),
                 drivers,
                 drivers_rx: Mutex::new(Some(drivers_rx)),
+                parent: None,
+            }),
+        }
+    }
+
+    /// Construct a new child injector.
+    ///
+    /// When a child injector is dropped, all associated listeners are cleaned up as well.
+    pub fn child(&self) -> Injector {
+        Self {
+            inner: Arc::new(Inner {
+                storage: Default::default(),
+                drivers: self.inner.drivers.clone(),
+                drivers_rx: Mutex::new(None),
+                parent: Some(self.clone()),
             }),
         }
     }
@@ -251,14 +267,21 @@ impl Injector {
     {
         let key = key.as_raw_key();
 
-        let storage = self.inner.storage.read();
-        let storage = storage.get(&key)?;
-        let value = storage.value.as_ref()?;
+        let mut current = Some(self);
 
-        match value.downcast_ref::<T>() {
-            Some(value) => Some(value.clone()),
-            None => panic!("downcast failed"),
+        while let Some(c) = current.take() {
+            let storage = c.inner.storage.read();
+
+            if let Some(storage) = storage.get(&key) {
+                if let Some(value) = storage.value.as_ref() {
+                    return Some(value.downcast_ref::<T>().expect("downcast failed").clone());
+                }
+            }
+
+            current = c.inner.parent.as_ref();
         }
+
+        None
     }
 
     /// Get an existing value and setup a stream for updates at the same time.
@@ -274,26 +297,32 @@ impl Injector {
     where
         T: Any + Send + Sync + 'static + Clone,
     {
-        let key = key.as_raw_key();
+        let raw_key = key.as_raw_key();
 
-        let (tx, rx) = mpsc::unbounded();
+        let mut rxs = Vec::new();
+        let mut value = None;
 
-        let value = {
-            let mut storage = self.inner.storage.write();
-            let storage = storage.entry(key).or_default();
+        let mut current = Some(self);
+
+        while let Some(c) = current.take() {
+            let (tx, rx) = mpsc::unbounded();
+
+            rxs.push(rx);
+
+            let mut storage = c.inner.storage.write();
+            let storage = storage.entry(raw_key.clone()).or_default();
             storage.subs.push(Sender { tx: tx.clone() });
 
-            match storage.value.as_ref() {
-                Some(value) => match value.downcast_ref::<T>() {
-                    Some(value) => Some(value.clone()),
-                    None => panic!("downcast failed"),
-                },
+            value = value.or_else(|| match storage.value.as_ref() {
+                Some(value) => Some(value.downcast_ref::<T>().expect("downcast failed").clone()),
                 None => None,
-            }
-        };
+            });
+
+            current = c.inner.parent.as_ref();
+        }
 
         let stream = Stream {
-            rx,
+            rx: stream::select_all(rxs),
             marker: marker::PhantomData,
         };
 
