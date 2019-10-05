@@ -1,5 +1,3 @@
-#![feature(async_await)]
-
 use futures::prelude::*;
 
 use async_injector::{async_trait, Error, Injector, Key, Provider};

@@ -21,11 +21,13 @@ async-injector-derive = { version = "0.2.0", path = "./async-injector-derive" }
 async-trait = "0.1.7"
 serde-hashkey = "0.2.0"
 serde = { version = "1.0.99", features = ["derive"] }
-
-[dependencies.futures]
-package = "futures-preview"
-version = "0.3.0-alpha.18"
-features = ["nightly", "async-await"]
+futures-util-preview = "=0.3.0-alpha.19"
+futures-channel-preview = "=0.3.0-alpha.19"
 
 [dev-dependencies]
 failure = "0.1.5"
+
+[dev-dependencies.futures]
+package = "futures-preview"
+version = "=0.3.0-alpha.19"
+features = ["async-await"]

@@ -1,7 +1,8 @@
 //! Asynchronous dependency injection for Rust.
 
-use futures::{
-    channel::mpsc,
+use futures_channel::mpsc;
+use futures_util::{
+    future::{select, Either},
     ready,
     stream::{self, StreamExt as _},
 };
@@ -105,10 +106,11 @@ where
             None => return Poll::Ready(None),
         };
 
-        match (value as Box<dyn Any + 'static>).downcast::<T>() {
-            Ok(value) => Poll::Ready(Some(Some(*value))),
-            Err(_) => panic!("downcast failed"),
+        if let Ok(value) = (value as Box<dyn Any + 'static>).downcast::<T>() {
+            return Poll::Ready(Some(Some(*value)));
         }
+
+        panic!("downcast failed");
     }
 }
 
@@ -174,6 +176,12 @@ pub struct Injector {
     inner: Arc<Inner>,
 }
 
+impl Default for Injector {
+    fn default() -> Self {
+        Injector::new()
+    }
+}
+
 impl Injector {
     /// Create a new injector instance.
     pub fn new() -> Self {
@@ -225,7 +233,7 @@ impl Injector {
             None => return,
         };
 
-        if let None = storage.value.take() {
+        if storage.value.take().is_none() {
             return;
         }
 
@@ -342,8 +350,6 @@ impl Injector {
     where
         T: Any + Send + Sync + 'static + Clone + Unpin,
     {
-        use futures::StreamExt as _;
-
         let (mut stream, value) = self.stream_key(key);
         let value = Arc::new(RwLock::new(value));
         let future_value = value.clone();
@@ -388,9 +394,10 @@ impl Injector {
             }
 
             while !drivers.is_empty() {
-                futures::select! {
-                    driver = rx.next() => drivers.push(driver.ok_or(Error::EndOfDriverStream)?),
-                    () = drivers.select_next_some() => (),
+                let result = select(rx.next(), drivers.select_next_some()).await;
+
+                if let Either::Left((driver, _)) = result {
+                    drivers.push(driver.ok_or(Error::EndOfDriverStream)?);
                 }
             }
         }

@@ -4,6 +4,7 @@ os:
   - windows
   - osx
 rust:
+  - beta
   - nightly
 cache: cargo
 branches:
