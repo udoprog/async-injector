@@ -228,7 +228,6 @@ impl Storage {
         S: Fn() -> Option<Box<dyn Any + Send + Sync + 'static>>,
     {
         // Local collection of disconnected subscriptions to delete.
-        // TODO: handle this in driver instead.
         let mut to_delete = smallvec::SmallVec::<[usize; 16]>::new();
 
         for (idx, s) in self.subs.iter().enumerate() {
@@ -246,8 +245,12 @@ impl Storage {
             return;
         }
 
-        for (c, idx) in to_delete.into_iter().enumerate() {
-            let _ = self.subs.swap_remove(idx.saturating_sub(c));
+        // The method we use to delete subscriptions works by swapping the given
+        // element to remove with the last element in the collection, then
+        // dropping and truncating it. This means we _have_ to delete elements
+        // in a reverse order.
+        for idx in to_delete.into_iter().rev() {
+            let _ = self.subs.swap_remove(idx);
         }
     }
 }

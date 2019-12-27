@@ -1,6 +1,6 @@
 [package]
 name = "async-injector"
-version = "0.4.0"
+version = "0.4.1"
 authors = ["John-John Tedro <udoprog@tedro.se>"]
 edition = "2018"
 license = "MIT/Apache-2.0"
@@ -13,12 +13,12 @@ Reactive dependency injection for Rust.
 """
 
 [dependencies]
-parking_lot = "0.9.0"
+parking_lot = "0.10.0"
 hashbrown = "0.5.0"
-smallvec = "0.6.10"
+smallvec = "1.1.0"
 log = "0.4.8"
 async-injector-derive = { version = "0.2.0", path = "./async-injector-derive" }
-async-trait = "0.1.7"
+async-trait = "0.1.22"
 serde-hashkey = "0.2.0"
 serde = { version = "1.0.104", features = ["derive"] }
 futures-util = "0.3.1"
