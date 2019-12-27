@@ -1,6 +1,6 @@
 [package]
 name = "async-injector"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["John-John Tedro <udoprog@tedro.se>"]
 edition = "2018"
 license = "MIT/Apache-2.0"
@@ -20,14 +20,12 @@ log = "0.4.8"
 async-injector-derive = { version = "0.2.0", path = "./async-injector-derive" }
 async-trait = "0.1.7"
 serde-hashkey = "0.2.0"
-serde = { version = "1.0.99", features = ["derive"] }
-futures-util-preview = "=0.3.0-alpha.19"
-futures-channel-preview = "=0.3.0-alpha.19"
+serde = { version = "1.0.104", features = ["derive"] }
+futures-util = "0.3.1"
+futures-channel = "0.3.1"
+lazy_static = "1.4.0"
 
 [dev-dependencies]
-failure = "0.1.5"
-
-[dev-dependencies.futures]
-package = "futures-preview"
-version = "=0.3.0-alpha.19"
-features = ["async-await"]
+futures = "0.3.1"
+anyhow = "1.0.26"
+tokio = { version = "0.2.6", features = ["full"] }

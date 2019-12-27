@@ -115,7 +115,7 @@ fn test_something() -> Result<(), Error> {
             );
 
             // Clearing bar should unset the value for `Foo`.
-            injector.clear_key::<String>(&bar_key);
+            injector.clear_key(&bar_key);
 
             let foo_update = foo_stream.select_next_some().await;
             assert!(foo_update.is_none());

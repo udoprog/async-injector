@@ -1,5 +1,5 @@
+use anyhow::Error;
 use async_injector::{async_trait, Injector, Key, Provider};
-use failure::Error;
 use futures::prelude::*;
 use std::{pin::Pin, sync::Arc};
 
@@ -37,7 +37,8 @@ impl Provider for ThingProvider {
     }
 }
 
-fn main() -> Result<(), Error> {
+#[tokio::main]
+async fn main() -> Result<(), Error> {
     use std::{thread, time::Duration};
 
     let injector = Injector::new();
@@ -81,42 +82,40 @@ fn main() -> Result<(), Error> {
         }
     });
 
-    futures::executor::block_on(async move {
-        let mut futures: Vec<Pin<Box<dyn Future<Output = Result<(), Error>>>>> = Vec::new();
+    let mut futures: Vec<Pin<Box<dyn Future<Output = Result<(), Error>>>>> = Vec::new();
 
-        // Provides `Thing`.
-        futures.push(Box::pin(async {
-            ThingProvider::run(&injector)
-                .await
-                .expect("injector not to error");
-            Ok(())
-        }));
+    // Provides `Thing`.
+    futures.push(Box::pin(async {
+        ThingProvider::run(&injector)
+            .await
+            .expect("injector not to error");
+        Ok(())
+    }));
 
-        // Keeps synchronized variables up-to-date.
-        futures.push(Box::pin(injector.clone().drive().map_err(Into::into)));
+    // Keeps synchronized variables up-to-date.
+    futures.push(Box::pin(injector.clone().drive().map_err(Into::into)));
 
-        // Future that observes changes to Thing.
-        futures.push(Box::pin(async {
-            let (mut thing_stream, thing) = injector.stream::<Thing>();
+    // Future that observes changes to Thing.
+    futures.push(Box::pin(async {
+        let (mut thing_stream, thing) = injector.stream::<Thing>();
 
-            println!("First thing: {:?}", thing);
+        println!("First thing: {:?}", thing);
 
-            while let Some(thing) = thing_stream.next().await {
-                println!("New thing: {:?}", thing);
+        while let Some(thing) = thing_stream.next().await {
+            println!("New thing: {:?}", thing);
 
-                if let Some(thing) = thing {
-                    if thing.title == "Bye Bye" {
-                        break;
-                    }
+            if let Some(thing) = thing {
+                if thing.title == "Bye Bye" {
+                    break;
                 }
             }
+        }
 
-            Ok(())
-        }));
+        Ok(())
+    }));
 
-        // Just blocking over all futures, not checking errors.
-        let _ = futures::future::select_all(futures).await;
-    });
+    // Just blocking over all futures, not checking errors.
+    let _ = futures::future::select_all(futures).await;
 
     let _ = t.join().expect("thread didn't exit gracefully");
     let _ = t2.join().expect("thread didn't exit gracefully");

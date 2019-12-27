@@ -31,9 +31,7 @@ The following is an example application that receives configuration changes
 over HTTP.
 
 ```rust
-#![feature(async_await)]
-
-use failure::Error;
+use anyhow::Error;
 use async_injector::{Provider, Injector, Key, async_trait};
 
 /// Provider that describes how to construct a database.
@@ -70,12 +68,12 @@ async fn serve(injector: &Injector) -> Result<(), Error> {
 
     // Fake endpoint to set the database URL.
     server.on("POST", "/config/database/url", |url: String| {
-        injector.update_key(Key::tagged("database/url"), url);
+        injector.update_key(Key::tagged("database/url")?, url);
     });
 
     // Fake endpoint to set the database connection limit.
     server.on("POST", "/config/database/connection-limit", |limit: u32| {
-        injector.update_key(Key::tagged("database/connection-limit"), limit);
+        injector.update_key(Key::tagged("database/connection-limit")?, limit);
     });
 
     // Listen for requests.
@@ -83,37 +81,37 @@ async fn serve(injector: &Injector) -> Result<(), Error> {
     Ok(())
 }
 
-#[runtime::main]
+#[tokio::main]
 async fn main() -> Result<(), Error> {
     let injector0 = Injector::new();
 
     /// Setup database provider.
     let injector = injector0.clone();
 
-    runtime::spawn(async move {
+    tokio::spawn(async move {
         DatabaseProvider::run(&injector0).await;
     });
 
     let injector = injector0.clone();
 
-    runtime::spawn(async move {
+    tokio::spawn(async move {
         serve(&injector).await.expect("web server errored");
-    })
+    });
 
     let (database_stream, database) = injector0.stream::<Database>();
 
     let application = Application::new(database);
 
     loop {
-        futures::select {
+        futures::select! {
             // receive new databases when available.
             database = database_stream.next() => {
                 application.database = database;
-            }
+            },
             // run the application to completion.
             _ = application => {
                 log::info!("application finished");
-            }
+            },
         }
     }
 }

@@ -1,4 +1,96 @@
 //! Asynchronous dependency injection for Rust.
+//!
+//! ## Example
+//!
+//! The following is an example application that receives configuration changes
+//! over HTTP.
+//!
+//! ```rust,compile_fail
+//! use anyhow::Error;
+//! use async_injector::{Provider, Injector, Key, async_trait};
+//!
+//! /// Provider that describes how to construct a database.
+//! #[derive(Provider)]
+//! struct DatabaseProvider {
+//!     #[dependency(tag = "\"database/url\"")]
+//!     url: String,
+//!     #[dependency(tag = "\"database/connection-limit\"")]
+//!     connection_limit: u32,
+//! }
+//!
+//! #[async_trait]
+//! impl Provider for DatabaseProvider {
+//!     type Output = Database;
+//!
+//!     /// Constructor a new database and supply it to the injector.
+//!     async fn build(self) -> Option<Self::Output> {
+//!         match Database::connect(&self.url, self.connection_limit).await {
+//!             Ok(database) => Some(database),
+//!             Err(e) => {
+//!                 log::warn!("failed to connect to database: {}: {}", self.url, e);
+//!                 None
+//!             }
+//!         }
+//!     }
+//! }
+//!
+//! /// A fake webserver handler.
+//! ///
+//! /// Note: there's no real HTTP framework that looks like this. This is just an
+//! /// example.
+//! async fn serve(injector: &Injector) -> Result<(), Error> {
+//!     let server = Server::new()?;
+//!
+//!     // Fake endpoint to set the database URL.
+//!     server.on("POST", "/config/database/url", |url: String| {
+//!         injector.update_key(Key::tagged("database/url")?, url);
+//!     });
+//!
+//!     // Fake endpoint to set the database connection limit.
+//!     server.on("POST", "/config/database/connection-limit", |limit: u32| {
+//!         injector.update_key(Key::tagged("database/connection-limit")?, limit);
+//!     });
+//!
+//!     // Listen for requests.
+//!     server.await?;
+//!     Ok(())
+//! }
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), Error> {
+//!     let injector0 = Injector::new();
+//!
+//!     /// Setup database provider.
+//!     let injector = injector0.clone();
+//!
+//!     tokio::spawn(async move {
+//!         DatabaseProvider::run(&injector0).await;
+//!     });
+//!
+//!     let injector = injector0.clone();
+//!
+//!     tokio::spawn(async move {
+//!         serve(&injector).await.expect("web server errored");
+//!     });
+//!
+//!     let (database_stream, database) = injector0.stream::<Database>();
+//!
+//!     let application = Application::new(database);
+//!
+//!     loop {
+//!         futures::select! {
+//!             // receive new databases when available.
+//!             database = database_stream.next() => {
+//!                 application.database = database;
+//!             },
+//!             // run the application to completion.
+//!             _ = application => {
+//!                 log::info!("application finished");
+//!             },
+//!         }
+//!     }
+//! }
+//! ```
 
 use futures_channel::mpsc;
 use futures_util::{
@@ -216,15 +308,15 @@ impl Injector {
     where
         T: Clone + Any + Send + Sync + 'static,
     {
-        self.clear_key::<T>(&Key::<T>::of())
+        self.clear_key(Key::<T>::of())
     }
 
     /// Clear the given value.
-    pub fn clear_key<T>(&self, key: &Key<T>)
+    pub fn clear_key<T>(&self, key: impl AsRef<Key<T>>)
     where
         T: Clone + Any + Send + Sync + 'static,
     {
-        let key = key.as_raw_key();
+        let key = key.as_ref().as_raw_key();
 
         let mut storage = self.inner.storage.write();
 
@@ -245,15 +337,15 @@ impl Injector {
     where
         T: Any + Send + Sync + 'static + Clone,
     {
-        self.update_key(&Key::<T>::of(), value)
+        self.update_key(Key::<T>::of(), value)
     }
 
     /// Set the given value and notify any subscribers.
-    pub fn update_key<T>(&self, key: &Key<T>, value: T)
+    pub fn update_key<T>(&self, key: impl AsRef<Key<T>>, value: T)
     where
         T: Any + Send + Sync + 'static + Clone,
     {
-        let key = key.as_raw_key();
+        let key = key.as_ref().as_raw_key();
         let mut storage = self.inner.storage.write();
         let storage = storage.entry(key).or_default();
         storage.try_send(|| Some(Box::new(value.clone())));
@@ -269,11 +361,11 @@ impl Injector {
     }
 
     /// Get a value from the injector with the given key.
-    pub fn get_key<T>(&self, key: &Key<T>) -> Option<T>
+    pub fn get_key<T>(&self, key: impl AsRef<Key<T>>) -> Option<T>
     where
         T: Any + Send + Sync + 'static + Clone,
     {
-        let key = key.as_raw_key();
+        let key = key.as_ref().as_raw_key();
 
         let mut current = Some(self);
 
@@ -301,11 +393,11 @@ impl Injector {
     }
 
     /// Get an existing value and setup a stream for updates at the same time.
-    pub fn stream_key<T>(&self, key: &Key<T>) -> (Stream<T>, Option<T>)
+    pub fn stream_key<T>(&self, key: impl AsRef<Key<T>>) -> (Stream<T>, Option<T>)
     where
         T: Any + Send + Sync + 'static + Clone,
     {
-        let raw_key = key.as_raw_key();
+        let raw_key = key.as_ref().as_raw_key();
 
         let mut rxs = Vec::new();
         let mut value = None;
@@ -346,7 +438,7 @@ impl Injector {
     }
 
     /// Get a synchronized variable for the given configuration key.
-    pub fn var_key<T>(&self, key: &Key<T>) -> Result<Arc<RwLock<Option<T>>>, Error>
+    pub fn var_key<T>(&self, key: impl AsRef<Key<T>>) -> Result<Arc<RwLock<Option<T>>>, Error>
     where
         T: Any + Send + Sync + 'static + Clone + Unpin,
     {
@@ -459,6 +551,12 @@ where
             tag_type_id: self.tag_type_id,
             tag: self.tag.clone(),
         }
+    }
+}
+
+impl<T: 'static> AsRef<Key<T>> for Key<T> {
+    fn as_ref(&self) -> &Self {
+        self
     }
 }
 
