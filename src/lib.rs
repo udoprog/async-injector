@@ -565,7 +565,7 @@ impl<T: 'static> AsRef<Key<T>> for Key<T> {
 
 /// The future that drives a synchronized variable.
 struct Driver {
-    future: Pin<Box<dyn Future<Output = ()> + Send + 'static>>,
+    future: Pin<Box<dyn Future<Output = ()> + Send + Sync + 'static>>,
 }
 
 impl Future for Driver {
