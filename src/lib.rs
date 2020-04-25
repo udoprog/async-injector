@@ -78,13 +78,13 @@
 //!     let application = Application::new(database);
 //!
 //!     loop {
-//!         futures::select! {
+//!         tokio::select! {
 //!             // receive new databases when available.
 //!             database = database_stream.next() => {
 //!                 application.database = database;
 //!             },
 //!             // run the application to completion.
-//!             _ = application => {
+//!             _ = &mut application => {
 //!                 log::info!("application finished");
 //!             },
 //!         }
@@ -92,14 +92,12 @@
 //! }
 //! ```
 
-use futures_channel::mpsc;
 use futures_util::{
     future::{select, Either},
     ready,
     stream::{self, StreamExt as _},
 };
 use hashbrown::HashMap;
-use parking_lot::{Mutex, RwLock};
 use serde_hashkey as hashkey;
 use std::{
     any::{Any, TypeId},
@@ -110,6 +108,7 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
+use tokio::sync::{mpsc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 #[macro_use]
 #[allow(unused_imports)]
@@ -223,7 +222,7 @@ struct Storage {
 
 impl Storage {
     /// Try to perform a send, or clean up if one fails.
-    fn try_send<S>(&mut self, send: S)
+    async fn try_send<S>(&mut self, send: S)
     where
         S: Fn() -> Option<Box<dyn Any + Send + Sync + 'static>>,
     {
@@ -231,13 +230,8 @@ impl Storage {
         let mut to_delete = smallvec::SmallVec::<[usize; 16]>::new();
 
         for (idx, s) in self.subs.iter().enumerate() {
-            if let Err(e) = s.tx.unbounded_send(send()) {
-                if e.is_disconnected() {
-                    to_delete.push(idx);
-                    continue;
-                }
-
-                log::warn!("failed to send resource update: {}", e);
+            if s.tx.clone().send(send()).is_err() {
+                to_delete.push(idx);
             }
         }
 
@@ -280,7 +274,7 @@ impl Default for Injector {
 impl Injector {
     /// Create a new injector instance.
     pub fn new() -> Self {
-        let (drivers, drivers_rx) = mpsc::unbounded();
+        let (drivers, drivers_rx) = mpsc::unbounded_channel();
 
         Self {
             inner: Arc::new(Inner {
@@ -307,21 +301,21 @@ impl Injector {
     }
 
     /// Clear the given value.
-    pub fn clear<T>(&self)
+    pub async fn clear<T>(&self)
     where
         T: Clone + Any + Send + Sync + 'static,
     {
-        self.clear_key(Key::<T>::of())
+        self.clear_key(Key::<T>::of()).await
     }
 
     /// Clear the given value.
-    pub fn clear_key<T>(&self, key: impl AsRef<Key<T>>)
+    pub async fn clear_key<T>(&self, key: impl AsRef<Key<T>>)
     where
         T: Clone + Any + Send + Sync + 'static,
     {
         let key = key.as_ref().as_raw_key();
 
-        let mut storage = self.inner.storage.write();
+        let mut storage = self.inner.storage.write().await;
 
         let storage = match storage.get_mut(&key) {
             Some(storage) => storage,
@@ -332,39 +326,39 @@ impl Injector {
             return;
         }
 
-        storage.try_send(|| None);
+        storage.try_send(|| None).await;
     }
 
     /// Set the given value and notify any subscribers.
-    pub fn update<T>(&self, value: T)
+    pub async fn update<T>(&self, value: T)
     where
         T: Any + Send + Sync + 'static + Clone,
     {
-        self.update_key(Key::<T>::of(), value)
+        self.update_key(Key::<T>::of(), value).await
     }
 
     /// Set the given value and notify any subscribers.
-    pub fn update_key<T>(&self, key: impl AsRef<Key<T>>, value: T)
+    pub async fn update_key<T>(&self, key: impl AsRef<Key<T>>, value: T)
     where
         T: Any + Send + Sync + 'static + Clone,
     {
         let key = key.as_ref().as_raw_key();
-        let mut storage = self.inner.storage.write();
+        let mut storage = self.inner.storage.write().await;
         let storage = storage.entry(key).or_default();
-        storage.try_send(|| Some(Box::new(value.clone())));
+        storage.try_send(|| Some(Box::new(value.clone()))).await;
         storage.value = Some(Box::new(value));
     }
 
     /// Get a value from the injector.
-    pub fn get<T>(&self) -> Option<T>
+    pub async fn get<T>(&self) -> Option<T>
     where
         T: Any + Send + Sync + 'static + Clone,
     {
-        self.get_key(&Key::<T>::of())
+        self.get_key(&Key::<T>::of()).await
     }
 
     /// Get a value from the injector with the given key.
-    pub fn get_key<T>(&self, key: impl AsRef<Key<T>>) -> Option<T>
+    pub async fn get_key<T>(&self, key: impl AsRef<Key<T>>) -> Option<T>
     where
         T: Any + Send + Sync + 'static + Clone,
     {
@@ -373,7 +367,7 @@ impl Injector {
         let mut current = Some(self);
 
         while let Some(c) = current.take() {
-            let storage = c.inner.storage.read();
+            let storage = c.inner.storage.read().await;
 
             if let Some(storage) = storage.get(&key) {
                 if let Some(value) = storage.value.as_ref() {
@@ -388,15 +382,15 @@ impl Injector {
     }
 
     /// Get an existing value and setup a stream for updates at the same time.
-    pub fn stream<T>(&self) -> (Stream<T>, Option<T>)
+    pub async fn stream<T>(&self) -> (Stream<T>, Option<T>)
     where
         T: Any + Send + Sync + 'static + Clone,
     {
-        self.stream_key(&Key::<T>::of())
+        self.stream_key(&Key::<T>::of()).await
     }
 
     /// Get an existing value and setup a stream for updates at the same time.
-    pub fn stream_key<T>(&self, key: impl AsRef<Key<T>>) -> (Stream<T>, Option<T>)
+    pub async fn stream_key<T>(&self, key: impl AsRef<Key<T>>) -> (Stream<T>, Option<T>)
     where
         T: Any + Send + Sync + 'static + Clone,
     {
@@ -408,11 +402,11 @@ impl Injector {
         let mut current = Some(self);
 
         while let Some(c) = current.take() {
-            let (tx, rx) = mpsc::unbounded();
+            let (tx, rx) = mpsc::unbounded_channel();
 
             rxs.push(rx);
 
-            let mut storage = c.inner.storage.write();
+            let mut storage = c.inner.storage.write().await;
             let storage = storage.entry(raw_key.clone()).or_default();
             storage.subs.push(Sender { tx: tx.clone() });
 
@@ -433,37 +427,35 @@ impl Injector {
     }
 
     /// Get a synchronized variable for the given configuration key.
-    pub fn var<T>(&self) -> Result<Arc<RwLock<Option<T>>>, Error>
+    pub async fn var<T>(&self) -> Result<Var<Option<T>>, Error>
     where
         T: Any + Send + Sync + 'static + Clone + Unpin,
     {
-        self.var_key(&Key::<T>::of())
+        self.var_key(&Key::<T>::of()).await
     }
 
     /// Get a synchronized variable for the given configuration key.
-    pub fn var_key<T>(&self, key: impl AsRef<Key<T>>) -> Result<Arc<RwLock<Option<T>>>, Error>
+    pub async fn var_key<T>(&self, key: impl AsRef<Key<T>>) -> Result<Var<Option<T>>, Error>
     where
         T: Any + Send + Sync + 'static + Clone + Unpin,
     {
-        let (mut stream, value) = self.stream_key(key);
-        let value = Arc::new(RwLock::new(value));
+        let (mut stream, value) = self.stream_key(key).await;
+        let value = Var::new(value);
         let future_value = value.clone();
 
         let future = async move {
             while let Some(update) = stream.next().await {
-                *future_value.write() = update;
+                *future_value.write().await = update;
             }
         };
 
-        let result = self.inner.drivers.unbounded_send(Driver {
+        let result = self.inner.drivers.clone().send(Driver {
             future: Box::pin(future),
         });
 
-        if let Err(e) = result {
+        if result.is_err() {
             // NB: normally happens when the injector is shutting down.
-            if !e.is_disconnected() {
-                return Err(Error::Shutdown);
-            }
+            return Err(Error::Shutdown);
         }
 
         Ok(value)
@@ -478,6 +470,7 @@ impl Injector {
             .inner
             .drivers_rx
             .lock()
+            .await
             .take()
             .ok_or(Error::DriverAlreadyConfigured)?;
 
@@ -573,5 +566,54 @@ impl Future for Driver {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.future.as_mut().poll(cx)
+    }
+}
+
+/// Proxy accessor for an injected variable.
+///
+/// This stores a reference to the given variable and provides methods for
+/// accessing it, similarly to an `RwLock`, but biased towards efficient
+/// cloning.
+#[derive(Debug)]
+pub struct Var<T> {
+    storage: Arc<RwLock<T>>,
+}
+
+impl<T> Clone for Var<T> {
+    fn clone(&self) -> Self {
+        Self {
+            storage: self.storage.clone(),
+        }
+    }
+}
+
+impl<T> Var<T> {
+    /// Construct a new variable holder.
+    pub fn new(value: T) -> Self {
+        Self {
+            storage: Arc::new(RwLock::new(value)),
+        }
+    }
+}
+
+impl<T> Var<T>
+where
+    T: Clone,
+{
+    /// Load the given variable, cloning the underlying value while doing so.
+    pub async fn load(&self) -> T {
+        self.storage.read().await.clone()
+    }
+}
+
+impl<T> Var<T> {
+    /// Read referentially from the underlying variable.
+    pub async fn read(&self) -> RwLockReadGuard<'_, T> {
+        self.storage.read().await
+    }
+
+    /// Write to the underlying variable.
+    pub async fn write(&self) -> RwLockWriteGuard<'_, T> {
+        self.storage.write().await
     }
 }

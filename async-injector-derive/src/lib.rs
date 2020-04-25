@@ -238,7 +238,7 @@ fn impl_factory<'a>(
             provider_fields.push(quote!(#key_ident: ::async_injector::Key<#field_ty>,));
 
             injected_fields_init.push(quote! {
-                let (mut #field_stream, #field_ident) = __injector.stream_key(&self.#key_ident);
+                let (mut #field_stream, #field_ident) = __injector.stream_key(&self.#key_ident).await;
                 self.#field_ident = #field_ident;
             });
 
@@ -265,8 +265,8 @@ fn impl_factory<'a>(
                         Some(#field_ident) => #field_ident,
                         None => {
                             match #ident::clear().await {
-                                Some(value) => __injector.update(value),
-                                None => __injector.clear::<<#ident as ::async_injector::Provider>::Output>(),
+                                Some(value) => __injector.update(value).await,
+                                None => __injector.clear::<<#ident as ::async_injector::Provider>::Output>().await,
                             }
 
                             continue;
@@ -297,8 +297,8 @@ fn impl_factory<'a>(
         };
 
         match builder.build().await {
-            Some(value) => __injector.update(value),
-            None => __injector.clear::<<#ident as ::async_injector::Provider>::Output>(),
+            Some(value) => __injector.update(value).await,
+            None => __injector.clear::<<#ident as ::async_injector::Provider>::Output>().await,
         }
     };
 

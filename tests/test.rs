@@ -95,12 +95,12 @@ fn test_something() -> Result<(), Error> {
         let mut finished = false;
 
         let test = Box::pin(async {
-            let (mut foo_stream, foo) = injector.stream::<Foo>();
+            let (mut foo_stream, foo) = injector.stream::<Foo>().await;
             assert!(foo.is_none());
 
             // Updating foo and bar should construct Foo.
-            injector.update::<String>(String::from("hello"));
-            injector.update_key(&bar_key, String::from("world"));
+            injector.update::<String>(String::from("hello")).await;
+            injector.update_key(&bar_key, String::from("world")).await;
 
             let foo_update = foo_stream.select_next_some().await;
             let foo = foo_update.expect("value for Foo");
@@ -115,7 +115,7 @@ fn test_something() -> Result<(), Error> {
             );
 
             // Clearing bar should unset the value for `Foo`.
-            injector.clear_key(&bar_key);
+            injector.clear_key(&bar_key).await;
 
             let foo_update = foo_stream.select_next_some().await;
             assert!(foo_update.is_none());
@@ -176,19 +176,19 @@ fn test_hierarchy() -> Result<(), Error> {
         let test1 = Box::pin(async {
             let _ = rx.await.expect("successful receive");
 
-            injector.update_key(&key, String::from("a"));
-            c2.update_key(&key, String::from("b"));
+            injector.update_key(&key, String::from("a")).await;
+            c2.update_key(&key, String::from("b")).await;
 
-            assert_eq!("a", c1.get_key(&key).expect("expected value: a"));
-            assert_eq!("b", c2.get_key(&key).expect("expected value: b"));
+            assert_eq!("a", c1.get_key(&key).await.expect("expected value: a"));
+            assert_eq!("b", c2.get_key(&key).await.expect("expected value: b"));
 
             finished_updates = true;
         });
 
         let test2 = Box::pin(async {
-            let (mut s1, _) = injector.stream_key(&key);
-            let (mut s2, _) = c1.stream_key(&key);
-            let (mut s3, _) = c2.stream_key(&key);
+            let (mut s1, _) = injector.stream_key(&key).await;
+            let (mut s2, _) = c1.stream_key(&key).await;
+            let (mut s3, _) = c2.stream_key(&key).await;
 
             tx.send(()).expect("successful send");
 

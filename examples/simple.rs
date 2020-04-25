@@ -47,37 +47,43 @@ async fn main() -> Result<(), Error> {
     let title_key = Key::<String>::tagged("title")?;
 
     // A separate thread which updates values in the injector once in a while.
-    let t = thread::spawn(move || {
+    let t = tokio::spawn(async move {
         let injector = thread_injector;
 
         // Nothing will happen, since we don't have all the dependencies.
         thread::sleep(Duration::from_secs(1));
-        injector.update_key(&title_key, String::from("New Title"));
+        injector
+            .update_key(&title_key, String::from("New Title"))
+            .await;
 
         // Set the database dependency and we will get the thing with `New Title`.
         thread::sleep(Duration::from_secs(1));
-        injector.update(Arc::new(Database));
+        injector.update(Arc::new(Database)).await;
 
         thread::sleep(Duration::from_secs(1));
-        injector.clear_key(&title_key);
+        injector.clear_key(&title_key).await;
 
         thread::sleep(Duration::from_secs(1));
-        injector.update_key(&title_key, String::from("Bye Bye"));
+        injector
+            .update_key(&title_key, String::from("Bye Bye"))
+            .await;
     });
 
     // Showcases using asynchronized variable to observe `Thing`.
     // This uses `parking_lot::RwLock`.
-    let thing_var = injector.var::<Thing>()?;
+    let thing_var = injector.var::<Thing>().await?;
 
     // A thing that observes synchronized variables.
-    let t2 = thread::spawn(move || loop {
-        thread::sleep(Duration::from_secs(1));
-        let thing = thing_var.read();
-        println!("Synchronized thing: {:?}", thing);
+    let t2 = tokio::spawn(async move {
+        loop {
+            tokio::time::delay_for(Duration::from_secs(1)).await;
+            let thing = thing_var.read().await;
+            println!("Synchronized thing: {:?}", *thing);
 
-        if let Some(thing) = &*thing {
-            if thing.title == "Bye Bye" {
-                break;
+            if let Some(thing) = &*thing {
+                if thing.title == "Bye Bye" {
+                    break;
+                }
             }
         }
     });
@@ -97,7 +103,7 @@ async fn main() -> Result<(), Error> {
 
     // Future that observes changes to Thing.
     futures.push(Box::pin(async {
-        let (mut thing_stream, thing) = injector.stream::<Thing>();
+        let (mut thing_stream, thing) = injector.stream::<Thing>().await;
 
         println!("First thing: {:?}", thing);
 
@@ -117,8 +123,8 @@ async fn main() -> Result<(), Error> {
     // Just blocking over all futures, not checking errors.
     let _ = futures::future::select_all(futures).await;
 
-    let _ = t.join().expect("thread didn't exit gracefully");
-    let _ = t2.join().expect("thread didn't exit gracefully");
+    let _ = t.await.expect("thread didn't exit gracefully");
+    let _ = t2.await.expect("thread didn't exit gracefully");
 
     Ok(())
 }
