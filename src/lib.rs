@@ -81,13 +81,20 @@
 //! ```rust,compile_fail
 //! use anyhow::Error;
 //! use async_injector::{Provider, Injector, Key, async_trait};
+//! use serde::Serialize;
+//!
+//! #[derive(Serialize)]
+//! pub enum Tag {
+//!    DatabaseUrl,
+//!    ConnectionLimit,
+//! }
 //!
 //! /// Provider that describes how to construct a database.
 //! #[derive(Provider)]
 //! struct DatabaseProvider {
-//!     #[dependency(tag = "\"database/url\"")]
+//!     #[dependency(tag = "Tag::DatabaseUrl")]
 //!     url: String,
-//!     #[dependency(tag = "\"database/connection-limit\"")]
+//!     #[dependency(tag = "Tag::DatabaseUrl")]
 //!     connection_limit: u32,
 //! }
 //!
@@ -116,12 +123,12 @@
 //!
 //!     // Fake endpoint to set the database URL.
 //!     server.on("POST", "/config/database/url", |url: String| {
-//!         injector.update_key(Key::tagged("database/url")?, url);
+//!         injector.update_key(Key::tagged(Tag::DatabaseUrl)?, url);
 //!     });
 //!
 //!     // Fake endpoint to set the database connection limit.
 //!     server.on("POST", "/config/database/connection-limit", |limit: u32| {
-//!         injector.update_key(Key::tagged("database/connection-limit")?, limit);
+//!         injector.update_key(Key::tagged(Tag::ConnectionLimit)?, limit);
 //!     });
 //!
 //!     // Listen for requests.
@@ -174,7 +181,6 @@
 use futures_util::{
     future::{select, Either},
     ready,
-    stream::{self, StreamExt as _},
 };
 use hashbrown::HashMap;
 use serde_hashkey as hashkey;
@@ -188,7 +194,14 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
+pub use tokio::select;
 use tokio::sync::{broadcast, mpsc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+/// re-export
+#[doc(hidden)]
+pub mod stream {
+    pub use tokio::stream::StreamExt;
+}
 
 #[macro_use]
 #[allow(unused_imports)]
@@ -202,7 +215,7 @@ pub use async_trait::async_trait;
 ///
 /// This is typically implemented using the [Provider derive].
 ///
-/// [Provider derive]: derive@async_injector_derive::Provider
+/// [Provider derive]: https://crates.io/crates/async-injector-derive
 #[async_trait]
 pub trait Provider
 where
@@ -265,11 +278,11 @@ impl From<hashkey::Error> for Error {
 
 /// A stream of updates for values injected into this injector.
 pub struct Stream<T> {
-    rxs: stream::SelectAll<broadcast::Receiver<Option<Value>>>,
+    rxs: futures_util::stream::SelectAll<broadcast::Receiver<Option<Value>>>,
     marker: marker::PhantomData<T>,
 }
 
-impl<T> stream::Stream for Stream<T> {
+impl<T> tokio::stream::Stream for Stream<T> {
     type Item = Option<T>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
@@ -300,7 +313,7 @@ impl<T> stream::Stream for Stream<T> {
     }
 }
 
-impl<T> stream::FusedStream for Stream<T> {
+impl<T> futures_util::stream::FusedStream for Stream<T> {
     fn is_terminated(&self) -> bool {
         self.rxs.is_terminated()
     }
@@ -682,7 +695,7 @@ impl Injector {
     {
         let raw_key = key.as_ref().as_raw_key();
 
-        let mut rxs = stream::SelectAll::new();
+        let mut rxs = futures_util::stream::SelectAll::new();
         let mut value = None;
 
         for c in self.chain() {
@@ -722,6 +735,8 @@ impl Injector {
     where
         T: Any + Send + Sync + 'static + Clone + Unpin,
     {
+        use tokio::stream::StreamExt as _;
+
         let (mut stream, value) = self.stream_key(key).await;
         let value = Var::new(value);
         let future_value = value.clone();
@@ -749,6 +764,8 @@ impl Injector {
     ///
     /// This has to be called for the injector to perform important tasks.
     pub async fn drive(self) -> Result<(), Error> {
+        use tokio::stream::StreamExt as _;
+
         let mut rx = self
             .inner
             .drivers_rx
@@ -757,7 +774,7 @@ impl Injector {
             .take()
             .ok_or(Error::DriverAlreadyConfigured)?;
 
-        let mut drivers = stream::FuturesUnordered::new();
+        let mut drivers = futures_util::stream::FuturesUnordered::new();
 
         loop {
             while drivers.is_empty() {
@@ -765,7 +782,7 @@ impl Injector {
             }
 
             while !drivers.is_empty() {
-                let result = select(rx.next(), drivers.select_next_some()).await;
+                let result = select(rx.next(), drivers.next()).await;
 
                 if let Either::Left((driver, _)) = result {
                     drivers.push(driver.ok_or(Error::EndOfDriverStream)?);

@@ -1,3 +1,43 @@
+//! Helper derive to implement a provider.
+//!
+//! # Examples
+//!
+//! ```rust,no_run
+//! use async_injector::{Provider, Injector, Key, async_trait};
+//! use serde::Serialize;
+//!
+//! /// Fake database connection.
+//! #[derive(Clone)]
+//! struct Database;
+//!
+//! /// Provider that describes how to construct a database.
+//! #[derive(Serialize)]
+//! pub enum Tag {
+//!     DatabaseUrl,
+//!     ConnectionLimit,
+//! }
+//!
+//! #[derive(Provider)]
+//! struct DatabaseProvider {
+//!     #[dependency(tag = "Tag::DatabaseUrl")]
+//!     url: String,
+//!     #[dependency(tag = "Tag::ConnectionLimit")]
+//!     connection_limit: u32,
+//! }
+//!
+//! #[async_trait]
+//! impl Provider for DatabaseProvider {
+//!     type Output = Database;
+//!
+//!     /// Constructor a new database and supply it to the injector.
+//!     async fn build(self) -> Option<Self::Output> {
+//!         println!("Url: {:?}", self.url);
+//!         println!("Connection Limit: {:?}", self.connection_limit);
+//!         None
+//!     }
+//! }
+//! ```
+
 #![recursion_limit = "256"]
 
 extern crate proc_macro;
@@ -11,19 +51,26 @@ use syn::*;
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,no_run
+/// use async_injector::{Provider, Injector, Key, async_trait};
+/// use serde::Serialize;
+///
+/// /// Fake database connection.
+/// #[derive(Clone)]
+/// struct Database;
+///
 /// /// Provider that describes how to construct a database.
 /// #[derive(Serialize)]
 /// pub enum Tag {
-///    DatabaseUrl,
-///    ConnectionLimit,
+///     DatabaseUrl,
+///     ConnectionLimit,
 /// }
 ///
 /// #[derive(Provider)]
 /// struct DatabaseProvider {
 ///     #[dependency(tag = "Tag::DatabaseUrl")]
 ///     url: String,
-///     #[dependency(tag = "Tag::DatabaseUrl")]
+///     #[dependency(tag = "Tag::ConnectionLimit")]
 ///     connection_limit: u32,
 /// }
 ///
@@ -33,13 +80,9 @@ use syn::*;
 ///
 ///     /// Constructor a new database and supply it to the injector.
 ///     async fn build(self) -> Option<Self::Output> {
-///         match Database::connect(&self.url, self.connection_limit).await {
-///             Ok(database) => Some(database),
-///             Err(e) => {
-///                 log::warn!("failed to connect to database: {}: {}", self.url, e);
-///                 None
-///             }
-///         }
+///         println!("Url: {:?}", self.url);
+///         println!("Connection Limit: {:?}", self.connection_limit);
+///         None
 ///     }
 /// }
 /// ```
@@ -281,8 +324,8 @@ fn impl_factory<'a>(
             });
 
             injected_update.push(quote! {
-                #field_ident = #field_stream.select_next_some() => {
-                    self.#field_ident = #field_ident;
+                #field_ident = ::async_injector::stream::StreamExt::next(&mut #field_stream) => {
+                    self.#field_ident = #field_ident.unwrap();
                 }
             });
 
@@ -349,13 +392,10 @@ fn impl_factory<'a>(
 
         impl#generics #factory_ident#generics {
             pub async fn run(mut self, __injector: &::async_injector::Injector) -> Result<(), ::async_injector::Error> {
-                use ::futures::stream::StreamExt as _;
-                use ::async_injector::Provider as _;
-
                 #(#injected_fields_init)*
 
                 loop {
-                    ::futures::select! {
+                    ::async_injector::select! {
                         #(#injected_update)*
                     }
 

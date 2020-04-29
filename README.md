@@ -114,13 +114,20 @@ over HTTP.
 ```rust
 use anyhow::Error;
 use async_injector::{Provider, Injector, Key, async_trait};
+use serde::Serialize;
+
+#[derive(Serialize)]
+pub enum Tag {
+    DatabaseUrl,
+    ConnectionLimit,
+}
 
 /// Provider that describes how to construct a database.
 #[derive(Provider)]
 struct DatabaseProvider {
-    #[dependency(tag = "\"database/url\"")]
+    #[dependency(tag = "Tag::Url")]
     url: String,
-    #[dependency(tag = "\"database/connection-limit\"")]
+    #[dependency(tag = "Tag::ConnectionLimit")]
     connection_limit: u32,
 }
 
@@ -149,12 +156,12 @@ async fn serve(injector: &Injector) -> Result<(), Error> {
 
     // Fake endpoint to set the database URL.
     server.on("POST", "/config/database/url", |url: String| {
-        injector.update_key(Key::tagged("database/url")?, url);
+        injector.update_key(Key::tagged(Tag::DatabaseUrl)?, url);
     });
 
     // Fake endpoint to set the database connection limit.
     server.on("POST", "/config/database/connection-limit", |limit: u32| {
-        injector.update_key(Key::tagged("database/connection-limit")?, limit);
+        injector.update_key(Key::tagged(Tag::ConnectionLimit)?, limit);
     });
 
     // Listen for requests.
