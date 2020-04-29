@@ -1,6 +1,79 @@
 //! Asynchronous dependency injection for Rust.
 //!
-//! ## Example
+//! ## Example using `Key`s
+//!
+//! The following showcases how the injector can be shared across threads, and how
+//! you can distinguish between different keys of the same type (`u32`) using a
+//! serde-serializable tag (`Tag`).
+//!
+//! ```rust,no_run
+//! use async_injector::{Key, Injector};
+//! use serde::Serialize;
+//! use std::{error::Error, time::Duration};
+//! use tokio::{stream::StreamExt as _, time};
+//!
+//! #[derive(Serialize)]
+//! enum Tag {
+//!     One,
+//!     Two,
+//! }
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn Error>> {
+//!     let injector = Injector::new();
+//!     let one = Key::<u32>::tagged(Tag::One)?;
+//!     let two = Key::<u32>::tagged(Tag::Two)?;
+//!
+//!     tokio::spawn({
+//!         let injector = injector.clone();
+//!         let one = one.clone();
+//!
+//!         async move {
+//!             let mut interval = time::interval(Duration::from_secs(1));
+//!
+//!             for i in 0u32.. {
+//!                 interval.tick().await;
+//!                 injector.update_key(&one, i).await;
+//!             }
+//!         }
+//!     });
+//!
+//!     tokio::spawn({
+//!         let injector = injector.clone();
+//!         let two = two.clone();
+//!
+//!         async move {
+//!             let mut interval = time::interval(Duration::from_secs(1));
+//!
+//!             for i in 0u32.. {
+//!                 interval.tick().await;
+//!                 injector.update_key(&two, i * 2).await;
+//!             }
+//!         }
+//!     });
+//!
+//!     let (mut one_stream, mut one) = injector.stream_key(one).await;
+//!     let (mut two_stream, mut two) = injector.stream_key(two).await;
+//!
+//!     println!("one: {:?}", one);
+//!     println!("two: {:?}", two);
+//!
+//!     loop {
+//!         tokio::select! {
+//!             Some(update) = one_stream.next() => {
+//!                 one = update;
+//!                 println!("one: {:?}", one);
+//!             }
+//!             Some(update) = two_stream.next() => {
+//!                 two = update;
+//!                 println!("two: {:?}", two);
+//!             }
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! # Example using Provider
 //!
 //! The following is an example application that receives configuration changes
 //! over HTTP.
@@ -96,6 +169,8 @@
 //! }
 //! ```
 
+#![deny(missing_docs)]
+
 use futures_util::{
     future::{select, Either},
     ready,
@@ -122,11 +197,18 @@ extern crate async_injector_derive;
 pub use self::async_injector_derive::*;
 pub use async_trait::async_trait;
 
+/// A trait for values that can be provided by resolving a collection of
+/// dependencies first.
+///
+/// This is typically implemented using the [Provider derive].
+///
+/// [Provider derive]: derive@async_injector_derive::Provider
 #[async_trait]
 pub trait Provider
 where
     Self: Sized,
 {
+    /// The value produced by the provider.
     type Output;
 
     /// What to do when you want to clear the value.
@@ -140,6 +222,9 @@ where
     }
 }
 
+/// Errors that can be raised by various functions in the [`Injector`].
+///
+/// [`Injector`]: Injector
 #[derive(Debug)]
 pub enum Error {
     /// Failed to perform work due to injector shutting down.
@@ -180,7 +265,7 @@ impl From<hashkey::Error> for Error {
 
 /// A stream of updates for values injected into this injector.
 pub struct Stream<T> {
-    rx: stream::SelectAll<broadcast::Receiver<Option<Value>>>,
+    rxs: stream::SelectAll<broadcast::Receiver<Option<Value>>>,
     marker: marker::PhantomData<T>,
 }
 
@@ -188,10 +273,10 @@ impl<T> stream::Stream for Stream<T> {
     type Item = Option<T>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
-        let mut rx = unsafe { Pin::map_unchecked_mut(self, |s| &mut s.rx) };
+        let mut rxs = unsafe { Pin::map_unchecked_mut(self, |s| &mut s.rxs) };
 
         let value = loop {
-            let value = match ready!(rx.as_mut().poll_next(cx)) {
+            let value = match ready!(rxs.as_mut().poll_next(cx)) {
                 Some(value) => value,
                 _ => return Poll::Ready(None),
             };
@@ -217,7 +302,7 @@ impl<T> stream::Stream for Stream<T> {
 
 impl<T> stream::FusedStream for Stream<T> {
     fn is_terminated(&self) -> bool {
-        self.rx.is_terminated()
+        self.rxs.is_terminated()
     }
 }
 
@@ -250,6 +335,7 @@ impl Drop for Value {
         }
     }
 }
+
 impl Value {
     /// Construct a new opaque value.
     pub(crate) fn new<T>(data: T) -> Self
@@ -298,6 +384,7 @@ impl Value {
     }
 }
 
+/// Safety: Send + Sync bound is enforced in all constructors of `Value`.
 unsafe impl Send for Value {}
 unsafe impl Sync for Value {}
 
@@ -308,19 +395,9 @@ struct Storage {
 
 impl Default for Storage {
     fn default() -> Self {
-        let (tx, _) = broadcast::channel(64);
+        let (subs, _) = broadcast::channel(1);
 
-        Self {
-            value: None,
-            subs: tx,
-        }
-    }
-}
-
-impl Storage {
-    /// Try to perform a send, or clean up if one fails.
-    fn try_send(&mut self, message: Option<Value>) {
-        let _ = self.subs.send(message);
+        Self { value: None, subs }
     }
 }
 
@@ -363,7 +440,8 @@ impl Injector {
 
     /// Construct a new child injector.
     ///
-    /// When a child injector is dropped, all associated listeners are cleaned up as well.
+    /// When a child injector is dropped, all associated listeners are cleaned
+    /// up as well.
     pub fn child(&self) -> Injector {
         Self {
             inner: Arc::new(Inner {
@@ -375,7 +453,30 @@ impl Injector {
         }
     }
 
-    /// Clear the given value.
+    /// Get a value from the injector.
+    ///
+    /// This will cause the clear to be propagated to all streams set up using
+    /// [`stream`]. And for future calls to [`get`] to return the updated value.
+    ///
+    /// [`stream`]: Injector::stream
+    /// [`get`]: Injector::get
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use async_injector::Injector;
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let injector = Injector::new();
+    ///
+    ///     assert_eq!(None, injector.get::<u32>().await);
+    ///     injector.update(1u32).await;
+    ///     assert_eq!(Some(1u32), injector.get::<u32>().await);
+    ///     injector.clear::<u32>().await;
+    ///     assert_eq!(None, injector.get::<u32>().await);
+    /// }
+    /// ```
     pub async fn clear<T>(&self)
     where
         T: Clone + Any + Send + Sync + 'static,
@@ -383,7 +484,34 @@ impl Injector {
         self.clear_key(Key::<T>::of()).await
     }
 
-    /// Clear the given value.
+    /// Clear the given value with the given key.
+    ///
+    /// This will cause the clear to be propagated to all streams set up using
+    /// [`stream`]. And for future calls to [`get`] to return the updated value.
+    ///
+    /// [`stream`]: Injector::stream
+    /// [`get`]: Injector::get
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use async_injector::{Key, Injector};
+    /// use std::error::Error;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn Error>> {
+    ///     let injector = Injector::new();
+    ///     let k = Key::<u32>::tagged("foo")?;
+    ///
+    ///     assert_eq!(None, injector.get_key(&k).await);
+    ///     injector.update_key(&k, 1u32).await;
+    ///     assert_eq!(Some(1u32), injector.get_key(&k).await);
+    ///     injector.clear_key(&k).await;
+    ///     assert_eq!(None, injector.get_key(&k).await);
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn clear_key<T>(&self, key: impl AsRef<Key<T>>)
     where
         T: Clone + Any + Send + Sync + 'static,
@@ -401,10 +529,31 @@ impl Injector {
             return;
         }
 
-        storage.try_send(None);
+        let _ = storage.subs.send(None);
     }
 
     /// Set the given value and notify any subscribers.
+    ///
+    /// This will cause the update to be propagated to all streams set up using
+    /// [`stream`]. And for future calls to [`get`] to return the updated value.
+    ///
+    /// [`stream`]: Injector::stream
+    /// [`get`]: Injector::get
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use async_injector::Injector;
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let injector = Injector::new();
+    ///
+    ///     assert_eq!(None, injector.get::<u32>().await);
+    ///     injector.update(1u32).await;
+    ///     assert_eq!(Some(1u32), injector.get::<u32>().await);
+    /// }
+    /// ```
     pub async fn update<T>(&self, value: T)
     where
         T: Any + Send + Sync + 'static + Clone,
@@ -412,7 +561,32 @@ impl Injector {
         self.update_key(Key::<T>::of(), value).await
     }
 
-    /// Set the given value and notify any subscribers.
+    /// Update the value associated with the given key.
+    ///
+    /// This will cause the update to be propagated to all streams set up using
+    /// [`stream`]. And for future calls to [`get`] to return the updated value.
+    ///
+    /// [`stream`]: Injector::stream
+    /// [`get`]: Injector::get
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use async_injector::{Key, Injector};
+    /// use std::error::Error;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn Error>> {
+    ///     let injector = Injector::new();
+    ///     let k = Key::<u32>::tagged("foo")?;
+    ///
+    ///     assert_eq!(None, injector.get_key(&k).await);
+    ///     injector.update_key(&k, 1u32).await;
+    ///     assert_eq!(Some(1u32), injector.get_key(&k).await);
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn update_key<T>(&self, key: impl AsRef<Key<T>>, value: T)
     where
         T: Any + Send + Sync + 'static + Clone,
@@ -421,11 +595,26 @@ impl Injector {
         let mut storage = self.inner.storage.write().await;
         let storage = storage.entry(key).or_default();
         let value = Value::new(value);
-        storage.try_send(Some(value.clone()));
+        let _ = storage.subs.send(Some(value.clone()));
         storage.value = Some(value);
     }
 
     /// Get a value from the injector.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use async_injector::Injector;
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let injector = Injector::new();
+    ///
+    ///     assert_eq!(None, injector.get::<u32>().await);
+    ///     injector.update(1u32).await;
+    ///     assert_eq!(Some(1u32), injector.get::<u32>().await);
+    /// }
+    /// ```
     pub async fn get<T>(&self) -> Option<T>
     where
         T: Any + Send + Sync + 'static + Clone,
@@ -434,26 +623,45 @@ impl Injector {
     }
 
     /// Get a value from the injector with the given key.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use async_injector::{Injector, Key};
+    /// use std::error::Error;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn Error>> {
+    ///     let k1 = Key::<u32>::tagged("foo")?;
+    ///     let k2 = Key::<u32>::tagged("bar")?;
+    ///
+    ///     let injector = Injector::new();
+    ///
+    ///     assert_eq!(None, injector.get_key(&k1).await);
+    ///     assert_eq!(None, injector.get_key(&k2).await);
+    ///
+    ///     injector.update_key(&k1, 1u32).await;
+    ///
+    ///     assert_eq!(Some(1u32), injector.get_key(&k1).await);
+    ///     assert_eq!(None, injector.get_key(&k2).await);
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn get_key<T>(&self, key: impl AsRef<Key<T>>) -> Option<T>
     where
         T: Any + Send + Sync + 'static + Clone,
     {
         let key = key.as_ref().as_raw_key();
 
-        let mut current = Some(self);
-
-        while let Some(c) = current.take() {
+        for c in self.chain() {
             let storage = c.inner.storage.read().await;
 
-            if let Some(storage) = storage.get(&key) {
-                if let Some(value) = storage.value.as_ref() {
-                    // Safety: The expected type parameter is encoded and
-                    // maintained in the Stream type.
-                    return Some(unsafe { value.downcast_ref::<T>().clone() });
-                }
+            if let Some(value) = storage.get(&key).and_then(|s| s.value.as_ref()) {
+                // Safety: The expected type parameter is encoded and
+                // maintained in the Stream type.
+                return Some(unsafe { value.downcast_ref::<T>().clone() });
             }
-
-            current = c.inner.parent.as_ref();
         }
 
         None
@@ -474,12 +682,10 @@ impl Injector {
     {
         let raw_key = key.as_ref().as_raw_key();
 
-        let mut rxs = Vec::new();
+        let mut rxs = stream::SelectAll::new();
         let mut value = None;
 
-        let mut current = Some(self);
-
-        while let Some(c) = current.take() {
+        for c in self.chain() {
             let mut storage = c.inner.storage.write().await;
             let storage = storage.entry(raw_key.clone()).or_default();
 
@@ -493,12 +699,10 @@ impl Injector {
                 }
                 None => None,
             });
-
-            current = c.inner.parent.as_ref();
         }
 
         let stream = Stream {
-            rx: stream::select_all(rxs),
+            rxs,
             marker: marker::PhantomData,
         };
 
@@ -569,15 +773,57 @@ impl Injector {
             }
         }
     }
+
+    /// Iterate through the chain of injectors.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use async_injector::Injector;
+    ///
+    /// let injector = Injector::new();
+    /// let child = injector.child();
+    ///
+    /// assert_eq!(1, injector.chain().count());
+    /// assert_eq!(2, child.chain().count());
+    /// ```
+    pub fn chain(&self) -> Chain<'_> {
+        Chain {
+            injector: Some(self),
+        }
+    }
+}
+
+/// A chain of [`Injector`]s.
+///
+/// A chain is composed of a child injector and all of its parents. This is
+/// created through [Injector::chain].
+///
+/// [`Injector`]: Injector
+pub struct Chain<'a> {
+    injector: Option<&'a Injector>,
+}
+
+impl<'a> Iterator for Chain<'a> {
+    type Item = &'a Injector;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let injector = self.injector.take()?;
+        self.injector = injector.inner.parent.as_ref();
+        Some(injector)
+    }
 }
 
 #[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
-pub struct RawKey {
+struct RawKey {
     type_id: TypeId,
     tag_type_id: TypeId,
     tag: hashkey::Key,
 }
 
+/// A key used to discriminate a value in the [`Injector`].
+///
+/// [`Injector`]: Injector
 #[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
 pub struct Key<T>
 where

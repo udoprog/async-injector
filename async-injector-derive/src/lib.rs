@@ -7,6 +7,43 @@ use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::*;
 
+/// Helper derive to implement a provider.
+///
+/// # Examples
+///
+/// /// Provider that describes how to construct a database.
+///
+/// ```rust
+/// #[derive(Serialize)]
+/// pub enum Tag {
+///    DatabaseUrl,
+///    ConnectionLimit,
+/// }
+///
+/// #[derive(Provider)]
+/// struct DatabaseProvider {
+///     #[dependency(tag = "Tag::DatabaseUrl")]
+///     url: String,
+///     #[dependency(tag = "Tag::DatabaseUrl")]
+///     connection_limit: u32,
+/// }
+///
+/// #[async_trait]
+/// impl Provider for DatabaseProvider {
+///     type Output = Database;
+///
+///     /// Constructor a new database and supply it to the injector.
+///     async fn build(self) -> Option<Self::Output> {
+///         match Database::connect(&self.url, self.connection_limit).await {
+///             Ok(database) => Some(database),
+///             Err(e) => {
+///                 log::warn!("failed to connect to database: {}: {}", self.url, e);
+///                 None
+///             }
+///         }
+///     }
+/// }
+/// ```
 #[proc_macro_derive(Provider, attributes(provider, dependency))]
 pub fn provider_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let ast = syn::parse_macro_input!(input as DeriveInput);
@@ -71,12 +108,12 @@ fn provider_fields<'a>(st: &'a DataStruct) -> Vec<ProviderField<'a>> {
                 _ => continue,
             };
 
-            if meta.name() == "dependency" {
+            if meta.path().is_ident("dependency") {
                 if dependency.is_some() {
                     panic!("multiple #[dependency] attributes are not supported");
                 }
 
-                dependency = Some(if let Meta::Word(_) = meta {
+                dependency = Some(if let Meta::Path(_) = meta {
                     DependencyAttr::default()
                 } else {
                     match DependencyAttr::from_meta(&meta) {
@@ -92,7 +129,9 @@ fn provider_fields<'a>(st: &'a DataStruct) -> Vec<ProviderField<'a>> {
         let dependency = match dependency {
             Some(dep) => Some(Dependency {
                 tag: match dep.tag {
-                    Some(tag) => Some(syn::parse_str::<TokenStream>(&tag).expect("`tag` to be valid expression")),
+                    Some(tag) => Some(
+                        syn::parse_str::<TokenStream>(&tag).expect("`tag` to be valid expression"),
+                    ),
                     None => None,
                 },
                 optional: dep.optional,
@@ -337,7 +376,7 @@ fn impl_factory<'a>(
 fn optional_ty(ty: &Type) -> &Type {
     match ty {
         Type::Path(ref path) => {
-            let last = path.path.segments.last().expect("missing path segment").into_value();
+            let last = path.path.segments.last().expect("missing path segment");
 
             if last.ident != "Option" {
                 panic!("optional field must be of type: Option<T>");
@@ -362,9 +401,7 @@ fn optional_ty(ty: &Type) -> &Type {
 }
 
 /// Constructs an immediate run implementation if there are no fixed dependencies.
-fn impl_immediate_run<'a>(
-    config: &ProviderConfig<'a>,
-) -> Option<TokenStream> {
+fn impl_immediate_run<'a>(config: &ProviderConfig<'a>) -> Option<TokenStream> {
     for f in &config.fields {
         if f.dependency.is_none() {
             return None;
