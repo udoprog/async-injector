@@ -103,12 +103,13 @@ use std::{
     any::{Any, TypeId},
     error, fmt,
     future::Future,
-    marker,
+    marker, mem,
     pin::Pin,
+    ptr,
     sync::Arc,
     task::{Context, Poll},
 };
-use tokio::sync::{mpsc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tokio::sync::{broadcast, mpsc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 #[macro_use]
 #[allow(unused_imports)]
@@ -173,14 +174,9 @@ impl From<serde_hashkey::Error> for Error {
     }
 }
 
-/// Use for sending information on updates.
-struct Sender {
-    tx: mpsc::UnboundedSender<Option<Box<dyn Any + Send + Sync + 'static>>>,
-}
-
 /// A stream of updates for values injected into this injector.
 pub struct Stream<T> {
-    rx: stream::SelectAll<mpsc::UnboundedReceiver<Option<Box<dyn Any + Send + Sync + 'static>>>>,
+    rx: stream::SelectAll<broadcast::Receiver<Option<Value>>>,
     marker: marker::PhantomData<T>,
 }
 
@@ -191,17 +187,20 @@ where
     type Item = Option<T>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
-        let value = match ready!(Pin::new(&mut self.rx).poll_next(cx)) {
-            Some(Some(value)) => value,
-            Some(None) => return Poll::Ready(Some(None)),
+        let result = match ready!(Pin::new(&mut self.rx).poll_next(cx)) {
+            Some(Ok(result)) => result,
+            Some(Err(_)) => return Poll::Ready(None),
             None => return Poll::Ready(None),
         };
 
-        if let Ok(value) = (value as Box<dyn Any + 'static>).downcast::<T>() {
-            return Poll::Ready(Some(Some(*value)));
-        }
+        let value = match result {
+            Some(value) => value,
+            None => return Poll::Ready(Some(None)),
+        };
 
-        panic!("downcast failed");
+        // Safety: The expected type parameter is encoded and
+        // maintained in the Stream type.
+        Poll::Ready(Some(Some(unsafe { value.downcast::<T>() })))
     }
 }
 
@@ -214,38 +213,106 @@ where
     }
 }
 
-#[derive(Default)]
+/// An opaque value holder, similar to Any, but can be cloned and relies
+/// entirely on external type information.
+struct Value {
+    data: *const (),
+    // clone function, to use when cloning the value.
+    value_clone_fn: unsafe fn(*const ()) -> *const (),
+    // drop function, to use when dropping the value.
+    value_drop_fn: unsafe fn(*const ()),
+}
+
+impl Clone for Value {
+    fn clone(&self) -> Self {
+        let data = unsafe { (self.value_clone_fn)(self.data as *const _) };
+
+        Self {
+            data,
+            value_clone_fn: self.value_clone_fn,
+            value_drop_fn: self.value_drop_fn,
+        }
+    }
+}
+
+impl Drop for Value {
+    fn drop(&mut self) {
+        unsafe {
+            (self.value_drop_fn)(self.data);
+        }
+    }
+}
+impl Value {
+    /// Construct a new opaque value.
+    pub(crate) fn new<T>(data: T) -> Self
+    where
+        T: 'static + Clone + Send + Sync,
+    {
+        return Self {
+            data: Box::into_raw(Box::new(data)) as *const (),
+            value_clone_fn: value_clone_fn::<T>,
+            value_drop_fn: value_drop_fn::<T>,
+        };
+
+        /// Clone implementation for a given value.
+        unsafe fn value_clone_fn<T>(data: *const ()) -> *const ()
+        where
+            T: Clone,
+        {
+            let data = T::clone(&*(data as *const _));
+            Box::into_raw(Box::new(data)) as *const ()
+        }
+
+        /// Drop implementation for a given value.
+        unsafe fn value_drop_fn<T>(value: *const ()) {
+            ptr::drop_in_place(value as *mut () as *mut T)
+        }
+    }
+
+    /// Downcast the given value reference.
+    ///
+    /// # Safety
+    ///
+    /// Assumes that we know the type of the underlying value.
+    pub(crate) unsafe fn downcast_ref<T>(&self) -> &T {
+        &*(self.data as *const T)
+    }
+
+    /// Downcast the given value.
+    ///
+    /// # Safety
+    ///
+    /// Assumes that we know the correct, underlying type of the value.
+    pub(crate) unsafe fn downcast<T>(self) -> T {
+        let value = Box::from_raw(self.data as *const T as *mut T);
+        mem::forget(self);
+        *value
+    }
+}
+
+unsafe impl Send for Value {}
+unsafe impl Sync for Value {}
+
 struct Storage {
-    value: Option<Box<dyn Any + Send + Sync + 'static>>,
-    subs: Vec<Sender>,
+    value: Option<Value>,
+    subs: broadcast::Sender<Option<Value>>,
+}
+
+impl Default for Storage {
+    fn default() -> Self {
+        let (tx, _) = broadcast::channel(64);
+
+        Self {
+            value: None,
+            subs: tx,
+        }
+    }
 }
 
 impl Storage {
     /// Try to perform a send, or clean up if one fails.
-    async fn try_send<S>(&mut self, send: S)
-    where
-        S: Fn() -> Option<Box<dyn Any + Send + Sync + 'static>>,
-    {
-        // Local collection of disconnected subscriptions to delete.
-        let mut to_delete = smallvec::SmallVec::<[usize; 16]>::new();
-
-        for (idx, s) in self.subs.iter().enumerate() {
-            if s.tx.clone().send(send()).is_err() {
-                to_delete.push(idx);
-            }
-        }
-
-        if to_delete.is_empty() {
-            return;
-        }
-
-        // The method we use to delete subscriptions works by swapping the given
-        // element to remove with the last element in the collection, then
-        // dropping and truncating it. This means we _have_ to delete elements
-        // in a reverse order.
-        for idx in to_delete.into_iter().rev() {
-            let _ = self.subs.swap_remove(idx);
-        }
+    fn try_send(&mut self, message: Option<Value>) {
+        let _ = self.subs.send(message);
     }
 }
 
@@ -326,7 +393,7 @@ impl Injector {
             return;
         }
 
-        storage.try_send(|| None).await;
+        storage.try_send(None);
     }
 
     /// Set the given value and notify any subscribers.
@@ -345,8 +412,9 @@ impl Injector {
         let key = key.as_ref().as_raw_key();
         let mut storage = self.inner.storage.write().await;
         let storage = storage.entry(key).or_default();
-        storage.try_send(|| Some(Box::new(value.clone()))).await;
-        storage.value = Some(Box::new(value));
+        let value = Value::new(value);
+        storage.try_send(Some(value.clone()));
+        storage.value = Some(value);
     }
 
     /// Get a value from the injector.
@@ -371,7 +439,9 @@ impl Injector {
 
             if let Some(storage) = storage.get(&key) {
                 if let Some(value) = storage.value.as_ref() {
-                    return Some(value.downcast_ref::<T>().expect("downcast failed").clone());
+                    // Safety: The expected type parameter is encoded and
+                    // maintained in the Stream type.
+                    return Some(unsafe { value.downcast_ref::<T>().clone() });
                 }
             }
 
@@ -402,16 +472,17 @@ impl Injector {
         let mut current = Some(self);
 
         while let Some(c) = current.take() {
-            let (tx, rx) = mpsc::unbounded_channel();
-
-            rxs.push(rx);
-
             let mut storage = c.inner.storage.write().await;
             let storage = storage.entry(raw_key.clone()).or_default();
-            storage.subs.push(Sender { tx: tx.clone() });
+
+            rxs.push(storage.subs.subscribe());
 
             value = value.or_else(|| match storage.value.as_ref() {
-                Some(value) => Some(value.downcast_ref::<T>().expect("downcast failed").clone()),
+                Some(value) => {
+                    // Safety: The expected type parameter is encoded and
+                    // maintained in the Stream type.
+                    Some(unsafe { value.downcast_ref::<T>().clone() })
+                }
                 None => None,
             });
 
@@ -492,9 +563,6 @@ impl Injector {
     }
 }
 
-/// Used to calculate the type-id of the empty key.
-enum Empty {}
-
 #[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
 pub struct RawKey {
     type_id: TypeId,
@@ -521,7 +589,7 @@ where
     pub fn of() -> Self {
         Self {
             type_id: TypeId::of::<T>(),
-            tag_type_id: TypeId::of::<Empty>(),
+            tag_type_id: TypeId::of::<()>(),
             tag: hashkey::Key::Unit,
             marker: std::marker::PhantomData,
         }
@@ -615,5 +683,36 @@ impl<T> Var<T> {
     /// Write to the underlying variable.
     pub async fn write(&self) -> RwLockWriteGuard<'_, T> {
         self.storage.write().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Value;
+
+    #[test]
+    fn test_clone() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        let count = Arc::new(AtomicUsize::new(0));
+
+        let value = Value::new(Foo(count.clone()));
+        assert_eq!(0, count.load(Ordering::SeqCst));
+        drop(value.clone());
+        assert_eq!(1, count.load(Ordering::SeqCst));
+        drop(value);
+        assert_eq!(2, count.load(Ordering::SeqCst));
+
+        #[derive(Clone)]
+        struct Foo(Arc<AtomicUsize>);
+
+        impl Drop for Foo {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
     }
 }
