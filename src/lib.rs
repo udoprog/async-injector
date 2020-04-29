@@ -58,22 +58,26 @@
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Error> {
-//!     let injector0 = Injector::new();
+//!     let injector = Injector::new();
 //!
 //!     /// Setup database provider.
-//!     let injector = injector0.clone();
+//!     tokio::spawn({
+//!         let injector = injector.clone();
 //!
-//!     tokio::spawn(async move {
-//!         DatabaseProvider::run(&injector0).await;
+//!         async move {
+//!             DatabaseProvider::run(&injector).await;
+//!         }
 //!     });
 //!
-//!     let injector = injector0.clone();
+//!     tokio::spawn({
+//!         let injector = injector.clone();
 //!
-//!     tokio::spawn(async move {
-//!         serve(&injector).await.expect("web server errored");
+//!         async move {
+//!             serve(&injector).await.expect("web server errored");
+//!         }
 //!     });
 //!
-//!     let (database_stream, database) = injector0.stream::<Database>();
+//!     let (database_stream, database) = injector.stream::<Database>().await;
 //!
 //!     let application = Application::new(database);
 //!
