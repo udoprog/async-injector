@@ -1,6 +1,8 @@
 # async-injector
 
-[![Build Status](https://travis-ci.org/udoprog/async-injector.svg?branch=master)](https://travis-ci.org/udoprog/async-injector)
+[![Documentation](https://docs.rs/async-injector/badge.svg)](https://docs.rs/async-injector)
+[![Crates](https://img.shields.io/crates/v/async-injector.svg)](https://crates.io/crates/async-injector)
+[![Actions Status](https://github.com/udoprog/async-injector/workflows/Rust/badge.svg)](https://github.com/udoprog/async-injector/actions)
 
 Reactive dependency injection for Rust.
 
