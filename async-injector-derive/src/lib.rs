@@ -11,9 +11,8 @@ use syn::*;
 ///
 /// # Examples
 ///
-/// /// Provider that describes how to construct a database.
-///
 /// ```rust
+/// /// Provider that describes how to construct a database.
 /// #[derive(Serialize)]
 /// pub enum Tag {
 ///    DatabaseUrl,
