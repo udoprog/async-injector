@@ -149,16 +149,16 @@ pub enum Error {
     /// Driver already configured.
     DriverAlreadyConfigured,
     /// Error when serializing key.
-    SerializationError(serde_hashkey::Error),
+    SerializationError(hashkey::Error),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Error::Shutdown => "injector is shutting down".fmt(fmt),
-            Error::EndOfDriverStream => "end of driver stream".fmt(fmt),
-            Error::DriverAlreadyConfigured => "driver already configured".fmt(fmt),
-            Error::SerializationError(..) => "serialization error".fmt(fmt),
+            Self::Shutdown => "injector is shutting down".fmt(fmt),
+            Self::EndOfDriverStream => "end of driver stream".fmt(fmt),
+            Self::DriverAlreadyConfigured => "driver already configured".fmt(fmt),
+            Self::SerializationError(..) => "serialization error".fmt(fmt),
         }
     }
 }
@@ -166,14 +166,14 @@ impl fmt::Display for Error {
 impl error::Error for Error {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
-            Error::SerializationError(e) => Some(e),
+            Self::SerializationError(e) => Some(e),
             _ => None,
         }
     }
 }
 
-impl From<serde_hashkey::Error> for Error {
-    fn from(value: serde_hashkey::Error) -> Self {
+impl From<hashkey::Error> for Error {
+    fn from(value: hashkey::Error) -> Self {
         Error::SerializationError(value)
     }
 }
@@ -184,36 +184,40 @@ pub struct Stream<T> {
     marker: marker::PhantomData<T>,
 }
 
-impl<T> stream::Stream for Stream<T>
-where
-    T: Unpin + Any + Send + Sync + 'static,
-{
+impl<T> stream::Stream for Stream<T> {
     type Item = Option<T>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
-        let result = match ready!(Pin::new(&mut self.rx).poll_next(cx)) {
-            Some(Ok(result)) => result,
-            Some(Err(_)) => return Poll::Ready(None),
-            None => return Poll::Ready(None),
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
+        let mut rx = unsafe { Pin::map_unchecked_mut(self, |s| &mut s.rx) };
+
+        let value = loop {
+            let value = match ready!(rx.as_mut().poll_next(cx)) {
+                Some(value) => value,
+                _ => return Poll::Ready(None),
+            };
+
+            match value {
+                Ok(value) => break value,
+                // NB: need to poll again.
+                Err(broadcast::RecvError::Lagged { .. }) => continue,
+                _ => return Poll::Ready(None),
+            };
         };
 
-        let value = match result {
+        let value = match value {
             Some(value) => value,
-            None => return Poll::Ready(Some(None)),
+            _ => return Poll::Ready(Some(None)),
         };
 
-        // Safety: The expected type parameter is encoded and
-        // maintained in the Stream type.
+        // Safety: The expected type parameter is encoded and maintained in the
+        // Stream<T> type.
         Poll::Ready(Some(Some(unsafe { value.downcast::<T>() })))
     }
 }
 
-impl<T> stream::FusedStream for Stream<T>
-where
-    T: Unpin + Any + Send + Sync + 'static,
-{
+impl<T> stream::FusedStream for Stream<T> {
     fn is_terminated(&self) -> bool {
-        false
+        self.rx.is_terminated()
     }
 }
 
