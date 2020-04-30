@@ -492,7 +492,7 @@ impl Injector {
     /// ```
     pub async fn clear<T>(&self)
     where
-        T: Clone + Any + Send + Sync + 'static,
+        T: Clone + Any + Send + Sync,
     {
         self.clear_key(Key::<T>::of()).await
     }
@@ -527,13 +527,13 @@ impl Injector {
     /// ```
     pub async fn clear_key<T>(&self, key: impl AsRef<Key<T>>)
     where
-        T: Clone + Any + Send + Sync + 'static,
+        T: Clone + Any + Send + Sync,
     {
         let key = key.as_ref().as_raw_key();
 
         let mut storage = self.inner.storage.write().await;
 
-        let storage = match storage.get_mut(&key) {
+        let storage = match storage.get_mut(key) {
             Some(storage) => storage,
             None => return,
         };
@@ -569,7 +569,7 @@ impl Injector {
     /// ```
     pub async fn update<T>(&self, value: T)
     where
-        T: Any + Send + Sync + 'static + Clone,
+        T: Clone + Any + Send + Sync,
     {
         self.update_key(Key::<T>::of(), value).await
     }
@@ -602,11 +602,11 @@ impl Injector {
     /// ```
     pub async fn update_key<T>(&self, key: impl AsRef<Key<T>>, value: T)
     where
-        T: Any + Send + Sync + 'static + Clone,
+        T: Clone + Any + Send + Sync,
     {
         let key = key.as_ref().as_raw_key();
         let mut storage = self.inner.storage.write().await;
-        let storage = storage.entry(key).or_default();
+        let storage = storage.entry(key.clone()).or_default();
         let value = Value::new(value);
         let _ = storage.subs.send(Some(value.clone()));
         storage.value = Some(value);
@@ -630,7 +630,7 @@ impl Injector {
     /// ```
     pub async fn get<T>(&self) -> Option<T>
     where
-        T: Any + Send + Sync + 'static + Clone,
+        T: Clone + Any + Send + Sync,
     {
         self.get_key(&Key::<T>::of()).await
     }
@@ -663,14 +663,14 @@ impl Injector {
     /// ```
     pub async fn get_key<T>(&self, key: impl AsRef<Key<T>>) -> Option<T>
     where
-        T: Any + Send + Sync + 'static + Clone,
+        T: Clone + Any + Send + Sync,
     {
         let key = key.as_ref().as_raw_key();
 
         for c in self.chain() {
             let storage = c.inner.storage.read().await;
 
-            if let Some(value) = storage.get(&key).and_then(|s| s.value.as_ref()) {
+            if let Some(value) = storage.get(key).and_then(|s| s.value.as_ref()) {
                 // Safety: The expected type parameter is encoded and
                 // maintained in the Stream type.
                 return Some(unsafe { value.downcast_ref::<T>().clone() });
@@ -683,24 +683,24 @@ impl Injector {
     /// Get an existing value and setup a stream for updates at the same time.
     pub async fn stream<T>(&self) -> (Stream<T>, Option<T>)
     where
-        T: Any + Send + Sync + 'static + Clone,
+        T: Clone + Any + Send + Sync,
     {
-        self.stream_key(&Key::<T>::of()).await
+        self.stream_key(Key::<T>::of()).await
     }
 
     /// Get an existing value and setup a stream for updates at the same time.
     pub async fn stream_key<T>(&self, key: impl AsRef<Key<T>>) -> (Stream<T>, Option<T>)
     where
-        T: Any + Send + Sync + 'static + Clone,
+        T: Clone + Any + Send + Sync,
     {
-        let raw_key = key.as_ref().as_raw_key();
+        let key = key.as_ref().as_raw_key();
 
         let mut rxs = futures_util::stream::SelectAll::new();
         let mut value = None;
 
         for c in self.chain() {
             let mut storage = c.inner.storage.write().await;
-            let storage = storage.entry(raw_key.clone()).or_default();
+            let storage = storage.entry(key.clone()).or_default();
 
             rxs.push(storage.subs.subscribe());
 
@@ -725,7 +725,7 @@ impl Injector {
     /// Get a synchronized variable for the given configuration key.
     pub async fn var<T>(&self) -> Result<Var<Option<T>>, Error>
     where
-        T: Any + Send + Sync + 'static + Clone + Unpin,
+        T: Clone + Any + Send + Sync + Unpin,
     {
         self.var_key(&Key::<T>::of()).await
     }
@@ -733,7 +733,7 @@ impl Injector {
     /// Get a synchronized variable for the given configuration key.
     pub async fn var_key<T>(&self, key: impl AsRef<Key<T>>) -> Result<Var<Option<T>>, Error>
     where
-        T: Any + Send + Sync + 'static + Clone + Unpin,
+        T: Clone + Any + Send + Sync + Unpin,
     {
         use tokio::stream::StreamExt as _;
 
@@ -838,6 +838,21 @@ struct RawKey {
     tag: hashkey::Key,
 }
 
+impl RawKey {
+    /// Construct a new raw key.
+    fn new<T, K>(tag: hashkey::Key) -> Self
+    where
+        T: Any,
+        K: Any,
+    {
+        Self {
+            type_id: TypeId::of::<T>(),
+            tag_type_id: TypeId::of::<K>(),
+            tag,
+        }
+    }
+}
+
 /// A key used to discriminate a value in the [`Injector`].
 ///
 /// [`Injector`]: Injector
@@ -846,9 +861,7 @@ pub struct Key<T>
 where
     T: Any,
 {
-    type_id: TypeId,
-    tag_type_id: TypeId,
-    tag: hashkey::Key,
+    raw_key: RawKey,
     marker: std::marker::PhantomData<T>,
 }
 
@@ -859,9 +872,7 @@ where
     /// Construct a new key without a tag.
     pub fn of() -> Self {
         Self {
-            type_id: TypeId::of::<T>(),
-            tag_type_id: TypeId::of::<()>(),
-            tag: hashkey::Key::Unit,
+            raw_key: RawKey::new::<T, ()>(hashkey::Key::Unit),
             marker: std::marker::PhantomData,
         }
     }
@@ -872,24 +883,21 @@ where
         K: Any + serde::Serialize,
     {
         Ok(Self {
-            type_id: TypeId::of::<T>(),
-            tag_type_id: TypeId::of::<K>(),
-            tag: hashkey::to_key(&tag)?,
+            raw_key: RawKey::new::<T, K>(hashkey::to_key(&tag)?),
             marker: std::marker::PhantomData,
         })
     }
 
     /// Convert into a raw key.
-    fn as_raw_key(&self) -> RawKey {
-        RawKey {
-            type_id: self.type_id,
-            tag_type_id: self.tag_type_id,
-            tag: self.tag.clone(),
-        }
+    fn as_raw_key(&self) -> &RawKey {
+        &self.raw_key
     }
 }
 
-impl<T: 'static> AsRef<Key<T>> for Key<T> {
+impl<T> AsRef<Key<T>> for Key<T>
+where
+    T: 'static,
+{
     fn as_ref(&self) -> &Self {
         self
     }
