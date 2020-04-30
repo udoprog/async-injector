@@ -124,6 +124,7 @@ pub enum Tag {
 
 /// Provider that describes how to construct a database.
 #[derive(Provider)]
+#[provider(build = "DatabaseProvider::build", output = "Database")]
 struct DatabaseProvider {
     #[dependency(tag = "Tag::Url")]
     url: String,
@@ -131,12 +132,9 @@ struct DatabaseProvider {
     connection_limit: u32,
 }
 
-#[async_trait]
-impl Provider for DatabaseProvider {
-    type Output = Database;
-
+impl DatabaseProvider {
     /// Constructor a new database and supply it to the injector.
-    async fn build(self) -> Option<Self::Output> {
+    async fn build(self) -> Option<Database> {
         match Database::connect(&self.url, self.connection_limit).await {
             Ok(database) => Some(database),
             Err(e) => {

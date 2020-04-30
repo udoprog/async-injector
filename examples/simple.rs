@@ -1,5 +1,5 @@
 use anyhow::Error;
-use async_injector::{async_trait, Injector, Key, Provider};
+use async_injector::{Injector, Key, Provider};
 use futures::prelude::*;
 use std::{pin::Pin, sync::Arc};
 
@@ -18,6 +18,7 @@ struct Thing {
 
 /// Provider that describes how to construct a `Thing`.
 #[derive(Provider)]
+#[provider(build = "ThingProvider::build", output = "Thing")]
 struct ThingProvider {
     #[dependency(tag = "\"title\"")]
     title: String,
@@ -25,11 +26,8 @@ struct ThingProvider {
     db: Arc<Database>,
 }
 
-#[async_trait]
-impl Provider for ThingProvider {
-    type Output = Thing;
-
-    async fn build(self) -> Option<Self::Output> {
+impl ThingProvider {
+    async fn build(self) -> Option<Thing> {
         Some(Thing {
             title: self.title,
             db: self.db,

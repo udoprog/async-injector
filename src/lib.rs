@@ -91,6 +91,7 @@
 //!
 //! /// Provider that describes how to construct a database.
 //! #[derive(Provider)]
+//! #[provider(build = "DatabaseProvider::build", output = "Database")]
 //! struct DatabaseProvider {
 //!     #[dependency(tag = "Tag::DatabaseUrl")]
 //!     url: String,
@@ -98,12 +99,9 @@
 //!     connection_limit: u32,
 //! }
 //!
-//! #[async_trait]
-//! impl Provider for DatabaseProvider {
-//!     type Output = Database;
-//!
+//! impl DatabaseProvider {
 //!     /// Constructor a new database and supply it to the injector.
-//!     async fn build(self) -> Option<Self::Output> {
+//!     async fn build(self) -> Option<Database> {
 //!         match Database::connect(&self.url, self.connection_limit).await {
 //!             Ok(database) => Some(database),
 //!             Err(e) => {
@@ -203,35 +201,6 @@ pub mod derive {
 extern crate async_injector_derive;
 #[doc(hidden)]
 pub use self::async_injector_derive::*;
-/// Re-export of [async_trait].
-///
-/// [async_trait]: https://crates.io/crates/async-trait
-pub use async_trait::async_trait;
-
-/// A trait for values that can be provided by resolving a collection of
-/// dependencies first.
-///
-/// This is typically implemented using the [Provider derive].
-///
-/// [Provider derive]: https://crates.io/crates/async-injector-derive
-#[async_trait]
-pub trait Provider
-where
-    Self: Sized,
-{
-    /// The value produced by the provider.
-    type Output;
-
-    /// What to do when you want to clear the value.
-    async fn clear() -> Option<Self::Output> {
-        None
-    }
-
-    /// What to do when we construct a value.
-    async fn build(self) -> Option<Self::Output> {
-        None
-    }
-}
 
 /// Errors that can be raised by various functions in the [`Injector`].
 ///

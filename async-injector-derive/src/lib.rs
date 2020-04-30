@@ -128,9 +128,37 @@ fn implement(ast: &DeriveInput) -> TokenStream {
 /// Build a provider configuration.
 fn provider_config<'a>(ast: &'a DeriveInput, st: &'a DataStruct) -> ProviderConfig<'a> {
     let fields = provider_fields(st);
+    let mut provider = None;
+
+    for a in &ast.attrs {
+        let meta = match a.parse_meta() {
+            Ok(meta) => meta,
+            _ => continue,
+        };
+
+        if meta.path().is_ident("provider") {
+            if provider.is_some() {
+                panic!("multiple #[provider] attributes are not supported");
+            }
+
+            provider = if let Meta::Path(_) = meta {
+                None
+            } else {
+                Some(match ProviderAttr::from_meta(&meta) {
+                    Ok(d) => d,
+                    Err(e) => panic!("bad #[provider(..)] attribute: {}", e),
+                })
+            };
+
+            continue;
+        }
+    }
+
+    let provider = provider.expect("missing #[provider(..)] attribute");
 
     ProviderConfig {
         fields,
+        provider,
         generics: &ast.generics,
     }
 }
@@ -306,6 +334,9 @@ fn impl_factory<'a>(
     let mut provider_clone = Vec::new();
     let mut initialized_fields = Vec::new();
 
+    let output = syn::parse_str::<TokenStream>(&config.provider.output)
+        .expect("`output` to be valid expression");
+
     for f in &config.fields {
         let field_ident = &f.ident;
 
@@ -341,15 +372,28 @@ fn impl_factory<'a>(
                     let #field_ident: Option<String> = #field_ident.map(Clone::clone);
                 });
             } else {
+                let clear = match &config.provider.clear {
+                    Some(clear) => {
+                        let clear = syn::parse_str::<TokenStream>(&clear)
+                            .expect("`clear` to be valid expression");
+
+                        quote! {
+                            match #clear().await {
+                                Some(output) => __injector.update::<#output>(output).await,
+                                None => __injector.clear::<#output>().await,
+                            }
+                        }
+                    }
+                    None => quote! {
+                        __injector.clear::<#output>().await;
+                    },
+                };
+
                 provider_extract.push(quote! {
                     let #field_ident = match self.#field_ident.as_ref() {
                         Some(#field_ident) => #field_ident,
                         None => {
-                            match #ident::clear().await {
-                                Some(value) => __injector.update(value).await,
-                                None => __injector.clear::<<#ident as ::async_injector::Provider>::Output>().await,
-                            }
-
+                            #clear
                             continue;
                         },
                     };
@@ -372,15 +416,29 @@ fn impl_factory<'a>(
         initialized_fields.push(quote!(#field_ident,));
     }
 
+    let build = match &config.provider.build {
+        Some(build) => {
+            let build =
+                syn::parse_str::<TokenStream>(&build).expect("`build` to be valid expression");
+
+            quote! {
+                match #build(builder).await {
+                    Some(output) => __injector.update::<#output>(output).await,
+                    None => __injector.clear::<#output>().await,
+                }
+            }
+        }
+        None => quote! {
+            __injector.clear::<#output>().await;
+        },
+    };
+
     let provider_construct = quote! {
         let builder = #ident {
             #(#initialized_fields)*
         };
 
-        match builder.build().await {
-            Some(value) => __injector.update(value).await,
-            None => __injector.clear::<<#ident as ::async_injector::Provider>::Output>().await,
-        }
+        #build
     };
 
     let generics = &config.generics;
@@ -459,6 +517,7 @@ fn impl_immediate_run<'a>(config: &ProviderConfig<'a>) -> Option<TokenStream> {
 
 struct ProviderConfig<'a> {
     fields: Vec<ProviderField<'a>>,
+    provider: ProviderAttr,
     generics: &'a Generics,
 }
 
@@ -484,4 +543,17 @@ struct DependencyAttr {
     /// Use a string tag.
     tag: Option<String>,
     optional: bool,
+}
+
+/// #[provider(...)] attribute
+#[derive(Debug, Default, FromMeta)]
+struct ProviderAttr {
+    /// Output type of the provider.
+    output: String,
+    /// Builder function for a provider.
+    #[darling(default)]
+    build: Option<String>,
+    /// Clear function for a provider.
+    #[darling(default)]
+    clear: Option<String>,
 }

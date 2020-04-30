@@ -1,6 +1,6 @@
 use futures::prelude::*;
 
-use async_injector::{async_trait, Error, Injector, Key, Provider};
+use async_injector::{Error, Injector, Key, Provider};
 
 #[derive(serde::Serialize)]
 pub enum Tag {
@@ -9,18 +9,15 @@ pub enum Tag {
 
 #[allow(unused)]
 #[derive(Provider)]
+#[provider(output = "()")]
 struct TestPlain {
     #[dependency]
     foo: String,
 }
 
-#[async_trait]
-impl Provider for TestPlain {
-    type Output = ();
-}
-
 #[allow(unused)]
 #[derive(Provider)]
+#[provider(output = "()")]
 struct TestTagged {
     fixed: String,
     #[dependency(tag = "\"bar\"")]
@@ -38,47 +35,30 @@ impl TestTagged {
     }
 }
 
-#[async_trait]
-impl Provider for TestTagged {
-    type Output = ();
-}
-
 #[allow(unused)]
 #[derive(Provider)]
+#[provider(output = "()")]
 struct TestFixed {
     fixed: String,
     #[dependency(tag = "\"bar\"")]
     foo: String,
 }
 
-#[async_trait]
-impl Provider for TestFixed {
-    type Output = ();
-}
-
 #[allow(unused)]
 #[derive(Provider)]
+#[provider(output = "()")]
 struct TestFixedLt<'a> {
     fixed: &'a str,
     #[dependency(tag = "\"bar\"")]
     foo: String,
 }
 
-#[async_trait]
-impl<'a> Provider for TestFixedLt<'a> {
-    type Output = ();
-}
-
 #[allow(unused)]
 #[derive(Provider)]
+#[provider(output = "()")]
 struct TestOptional {
     #[dependency(optional)]
     foo: Option<String>,
-}
-
-#[async_trait]
-impl Provider for TestOptional {
-    type Output = ();
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,6 +115,7 @@ fn test_something() -> Result<(), Error> {
     return Ok(());
 
     #[derive(Provider)]
+    #[provider(build = "Test::build", output = "Foo")]
     struct Test<'a> {
         fixed: &'a str,
         /// Dependency to untagged foo.
@@ -145,11 +126,8 @@ fn test_something() -> Result<(), Error> {
         bar: String,
     }
 
-    #[async_trait]
-    impl<'a> Provider for Test<'a> {
-        type Output = Foo;
-
-        async fn build(self) -> Option<Self::Output> {
+    impl<'a> Test<'a> {
+        async fn build(self) -> Option<Foo> {
             Some(Foo(Some(self.fixed.to_string()), self.foo, self.bar))
         }
     }
