@@ -178,10 +178,6 @@
 
 #![deny(missing_docs)]
 
-use futures_util::{
-    future::{select, Either},
-    ready,
-};
 use hashbrown::HashMap;
 use serde_hashkey as hashkey;
 use std::{
@@ -194,13 +190,12 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
-pub use tokio::select;
 use tokio::sync::{broadcast, mpsc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-/// re-export
+/// re-exports for the Provider derive.
 #[doc(hidden)]
-pub mod stream {
-    pub use tokio::stream::StreamExt;
+pub mod derive {
+    pub use tokio::{select, stream::StreamExt};
 }
 
 #[macro_use]
@@ -208,6 +203,9 @@ pub mod stream {
 extern crate async_injector_derive;
 #[doc(hidden)]
 pub use self::async_injector_derive::*;
+/// Re-export of [async_trait].
+///
+/// [async_trait]: https://crates.io/crates/async-trait
 pub use async_trait::async_trait;
 
 /// A trait for values that can be provided by resolving a collection of
@@ -278,7 +276,7 @@ impl From<hashkey::Error> for Error {
 
 /// A stream of updates for values injected into this injector.
 pub struct Stream<T> {
-    rxs: futures_util::stream::SelectAll<broadcast::Receiver<Option<Value>>>,
+    rxs: ::futures_util::stream::SelectAll<broadcast::Receiver<Option<Value>>>,
     marker: marker::PhantomData<T>,
 }
 
@@ -289,7 +287,12 @@ impl<T> tokio::stream::Stream for Stream<T> {
         let mut rxs = unsafe { Pin::map_unchecked_mut(self, |s| &mut s.rxs) };
 
         let value = loop {
-            let value = match ready!(rxs.as_mut().poll_next(cx)) {
+            let value = match rxs.as_mut().poll_next(cx) {
+                Poll::Ready(value) => value,
+                Poll::Pending => return Poll::Pending,
+            };
+
+            let value = match value {
                 Some(value) => value,
                 _ => return Poll::Ready(None),
             };
@@ -313,7 +316,7 @@ impl<T> tokio::stream::Stream for Stream<T> {
     }
 }
 
-impl<T> futures_util::stream::FusedStream for Stream<T> {
+impl<T> ::futures_util::stream::FusedStream for Stream<T> {
     fn is_terminated(&self) -> bool {
         self.rxs.is_terminated()
     }
@@ -531,18 +534,11 @@ impl Injector {
     {
         let key = key.as_ref().as_raw_key();
 
-        let mut storage = self.inner.storage.write().await;
-
-        let storage = match storage.get_mut(key) {
-            Some(storage) => storage,
-            None => return,
+        if let Some(storage) = self.inner.storage.write().await.get_mut(key) {
+            if storage.value.take().is_some() {
+                let _ = storage.subs.send(None);
+            }
         };
-
-        if storage.value.take().is_none() {
-            return;
-        }
-
-        let _ = storage.subs.send(None);
     }
 
     /// Set the given value and notify any subscribers.
@@ -695,7 +691,7 @@ impl Injector {
     {
         let key = key.as_ref().as_raw_key();
 
-        let mut rxs = futures_util::stream::SelectAll::new();
+        let mut rxs = ::futures_util::stream::SelectAll::new();
         let mut value = None;
 
         for c in self.chain() {
@@ -774,7 +770,7 @@ impl Injector {
             .take()
             .ok_or(Error::DriverAlreadyConfigured)?;
 
-        let mut drivers = futures_util::stream::FuturesUnordered::new();
+        let mut drivers = ::futures_util::stream::FuturesUnordered::new();
 
         loop {
             while drivers.is_empty() {
@@ -782,10 +778,12 @@ impl Injector {
             }
 
             while !drivers.is_empty() {
-                let result = select(rx.next(), drivers.next()).await;
-
-                if let Either::Left((driver, _)) = result {
-                    drivers.push(driver.ok_or(Error::EndOfDriverStream)?);
+                tokio::select! {
+                    driver = rx.next() => {
+                        drivers.push(driver.ok_or(Error::EndOfDriverStream)?);
+                    }
+                    _ = drivers.next() => {
+                    }
                 }
             }
         }

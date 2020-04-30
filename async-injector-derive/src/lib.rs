@@ -324,7 +324,7 @@ fn impl_factory<'a>(
             });
 
             injected_update.push(quote! {
-                #field_ident = ::async_injector::stream::StreamExt::next(&mut #field_stream) => {
+                #field_ident = ::async_injector::derive::StreamExt::next(&mut #field_stream) => {
                     self.#field_ident = #field_ident.unwrap();
                 }
             });
@@ -395,7 +395,7 @@ fn impl_factory<'a>(
                 #(#injected_fields_init)*
 
                 loop {
-                    ::async_injector::select! {
+                    ::async_injector::derive::select! {
                         #(#injected_update)*
                     }
 
