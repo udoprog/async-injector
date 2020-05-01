@@ -180,9 +180,9 @@ use hashbrown::HashMap;
 use serde_hashkey as hashkey;
 use std::{
     any::{Any, TypeId},
-    error, fmt,
+    cmp, error, fmt,
     future::Future,
-    marker, mem,
+    hash, marker, mem,
     pin::Pin,
     ptr,
     sync::Arc,
@@ -646,6 +646,41 @@ impl Injector {
     }
 
     /// Get an existing value and setup a stream for updates at the same time.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use async_injector::Injector;
+    /// use tokio::stream::StreamExt as _;
+    /// use std::error::Error;
+    ///
+    /// #[derive(Clone)]
+    /// struct Database;
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let injector = Injector::new();
+    ///     let (mut database_stream, mut database) = injector.stream::<Database>().await;
+    ///
+    ///     // Update the key somewhere else.
+    ///     tokio::spawn({
+    ///         let injector = injector.clone();
+    ///
+    ///         async move {
+    ///             injector.update(Database).await;
+    ///         }
+    ///     });
+    ///
+    ///     loop {
+    ///         tokio::select! {
+    ///             Some(update) = database_stream.next() => {
+    ///                 database = update;
+    ///                 break;
+    ///             }
+    ///         }
+    ///     }
+    /// }
+    /// ```
     pub async fn stream<T>(&self) -> (Stream<T>, Option<T>)
     where
         T: Clone + Any + Send + Sync,
@@ -654,6 +689,45 @@ impl Injector {
     }
 
     /// Get an existing value and setup a stream for updates at the same time.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use async_injector::{Injector, Key};
+    /// use tokio::stream::StreamExt as _;
+    /// use std::error::Error;
+    ///
+    /// #[derive(Clone)]
+    /// struct Database;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn Error>> {
+    ///     let injector = Injector::new();
+    ///     let db = Key::<Database>::tagged("foo")?;
+    ///     let (mut database_stream, mut database) = injector.stream_key(&db).await;
+    ///
+    ///     // Update the key somewhere else.
+    ///     tokio::spawn({
+    ///         let db = db.clone();
+    ///         let injector = injector.clone();
+    ///
+    ///         async move {
+    ///             injector.update_key(&db, Database).await;
+    ///         }
+    ///     });
+    ///
+    ///     loop {
+    ///         tokio::select! {
+    ///             Some(update) = database_stream.next() => {
+    ///                 database = update;
+    ///                 break;
+    ///             }
+    ///         }
+    ///     }
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn stream_key<T>(&self, key: impl AsRef<Key<T>>) -> (Stream<T>, Option<T>)
     where
         T: Clone + Any + Send + Sync,
@@ -688,6 +762,43 @@ impl Injector {
     }
 
     /// Get a synchronized variable for the given configuration key.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use async_injector::Injector;
+    /// use tokio::stream::StreamExt as _;
+    /// use std::error::Error;
+    ///
+    /// #[derive(Clone)]
+    /// struct Database;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn Error>> {
+    ///     let injector = Injector::new();
+    ///
+    ///     // Drive variable updates.
+    ///     tokio::spawn({
+    ///         let injector = injector.clone();
+    ///
+    ///         async move {
+    ///             injector.drive().await.expect("injector driver failed");
+    ///         }
+    ///     });
+    ///
+    ///     let database = injector.var::<Database>().await?;
+    ///
+    ///     assert!(database.read().await.is_none());
+    ///     injector.update(Database).await;
+    ///
+    ///     /// Variable updated in the background by the driver.
+    ///     while database.read().await.is_none() {
+    ///     }
+    ///
+    ///     assert!(database.read().await.is_some());
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn var<T>(&self) -> Result<Var<Option<T>>, Error>
     where
         T: Clone + Any + Send + Sync + Unpin,
@@ -696,6 +807,44 @@ impl Injector {
     }
 
     /// Get a synchronized variable for the given configuration key.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use async_injector::{Injector, Key};
+    /// use tokio::stream::StreamExt as _;
+    /// use std::error::Error;
+    ///
+    /// #[derive(Clone)]
+    /// struct Database;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn Error>> {
+    ///     let injector = Injector::new();
+    ///     let db = Key::<Database>::tagged("foo")?;
+    ///
+    ///     // Drive variable updates.
+    ///     tokio::spawn({
+    ///         let injector = injector.clone();
+    ///
+    ///         async move {
+    ///             injector.drive().await.expect("injector driver failed");
+    ///         }
+    ///     });
+    ///
+    ///     let database = injector.var_key(&db).await?;
+    ///
+    ///     assert!(database.read().await.is_none());
+    ///     injector.update_key(&db, Database).await;
+    ///
+    ///     /// Variable updated in the background by the driver.
+    ///     while database.read().await.is_none() {
+    ///     }
+    ///
+    ///     assert!(database.read().await.is_some());
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn var_key<T>(&self, key: impl AsRef<Key<T>>) -> Result<Var<Option<T>>, Error>
     where
         T: Clone + Any + Send + Sync + Unpin,
@@ -728,6 +877,43 @@ impl Injector {
     /// associated with it are driven to completion.
     ///
     /// This has to be called for the injector to perform important tasks.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use async_injector::Injector;
+    /// use tokio::stream::StreamExt as _;
+    /// use std::error::Error;
+    ///
+    /// #[derive(Clone)]
+    /// struct Database;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn Error>> {
+    ///     let injector = Injector::new();
+    ///
+    ///     // Drive variable updates.
+    ///     tokio::spawn({
+    ///         let injector = injector.clone();
+    ///
+    ///         async move {
+    ///             injector.drive().await.expect("injector driver failed");
+    ///         }
+    ///     });
+    ///
+    ///     let database = injector.var::<Database>().await?;
+    ///
+    ///     assert!(database.read().await.is_none());
+    ///     injector.update(Database).await;
+    ///
+    ///     /// Variable updated in the background by the driver.
+    ///     while database.read().await.is_none() {
+    ///     }
+    ///
+    ///     assert!(database.read().await.is_some());
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn drive(self) -> Result<(), Error> {
         use tokio::stream::StreamExt as _;
 
@@ -823,7 +1009,7 @@ impl RawKey {
 /// A key used to discriminate a value in the [`Injector`].
 ///
 /// [`Injector`]: Injector
-#[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
+#[derive(Clone)]
 pub struct Key<T>
 where
     T: Any,
@@ -832,11 +1018,71 @@ where
     marker: std::marker::PhantomData<T>,
 }
 
+impl<T> fmt::Debug for Key<T>
+where
+    T: Any,
+{
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.raw_key, fmt)
+    }
+}
+
+impl<T> cmp::PartialEq for Key<T>
+where
+    T: Any,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.as_raw_key().eq(other.as_raw_key())
+    }
+}
+
+impl<T> cmp::Eq for Key<T> where T: Any {}
+
+impl<T> cmp::PartialOrd for Key<T>
+where
+    T: Any,
+{
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+        self.as_raw_key().partial_cmp(other.as_raw_key())
+    }
+}
+
+impl<T> cmp::Ord for Key<T>
+where
+    T: Any,
+{
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
+        self.as_raw_key().cmp(other.as_raw_key())
+    }
+}
+
+impl<T> hash::Hash for Key<T>
+where
+    T: Any,
+{
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: hash::Hasher,
+    {
+        self.as_raw_key().hash(state);
+    }
+}
+
 impl<T> Key<T>
 where
     T: Any,
 {
     /// Construct a new key without a tag.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use async_injector::Key;
+    ///
+    /// struct Foo;
+    ///
+    /// assert_eq!(Key::<Foo>::of(), Key::<Foo>::of());
+    /// ```
     pub fn of() -> Self {
         Self {
             raw_key: RawKey::new::<T, ()>(hashkey::Key::Unit),
@@ -845,6 +1091,34 @@ where
     }
 
     /// Construct a new key.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use serde::Serialize;
+    /// use async_injector::Key;
+    ///
+    /// struct Foo;
+    ///
+    /// #[derive(Serialize)]
+    /// enum Tag {
+    ///     One,
+    ///     Two,
+    /// }
+    ///
+    /// #[derive(Serialize)]
+    /// enum Tag2 {
+    ///     One,
+    ///     Two,
+    /// }
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// assert_eq!(Key::<Foo>::tagged(Tag::One)?, Key::<Foo>::tagged(Tag::One)?);
+    /// assert_ne!(Key::<Foo>::tagged(Tag::One)?, Key::<Foo>::tagged(Tag::Two)?);
+    /// assert_ne!(Key::<Foo>::tagged(Tag::One)?, Key::<Foo>::tagged(Tag2::One)?);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn tagged<K>(tag: K) -> Result<Self, Error>
     where
         K: Any + serde::Serialize,
