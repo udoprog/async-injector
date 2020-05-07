@@ -178,16 +178,18 @@
 
 use hashbrown::HashMap;
 use serde_hashkey as hashkey;
-use std::{
-    any::{Any, TypeId},
-    cmp, error, fmt,
-    future::Future,
-    hash, marker, mem,
-    pin::Pin,
-    ptr,
-    sync::Arc,
-    task::{Context, Poll},
-};
+use std::any::{Any, TypeId};
+use std::cmp;
+use std::error;
+use std::fmt;
+use std::future::Future;
+use std::hash;
+use std::marker;
+use std::mem;
+use std::pin::Pin;
+use std::ptr;
+use std::sync::Arc;
+use std::task::{Context, Poll};
 use tokio::sync::{broadcast, mpsc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 /// re-exports for the Provider derive.
@@ -357,6 +359,15 @@ impl Value {
         &*(self.data as *const T)
     }
 
+    /// Downcast the given value to a mutable reference.
+    ///
+    /// # Safety
+    ///
+    /// Assumes that we know the type of the underlying value.
+    pub(crate) unsafe fn downcast_mut<T>(&mut self) -> &mut T {
+        &mut *(self.data as *const T as *mut T)
+    }
+
     /// Downcast the given value.
     ///
     /// # Safety
@@ -458,11 +469,11 @@ impl Injector {
     ///     assert_eq!(None, injector.get::<u32>().await);
     ///     injector.update(1u32).await;
     ///     assert_eq!(Some(1u32), injector.get::<u32>().await);
-    ///     injector.clear::<u32>().await;
+    ///     assert!(injector.clear::<u32>().await.is_some());
     ///     assert_eq!(None, injector.get::<u32>().await);
     /// }
     /// ```
-    pub async fn clear<T>(&self)
+    pub async fn clear<T>(&self) -> Option<T>
     where
         T: Clone + Any + Send + Sync,
     {
@@ -491,23 +502,23 @@ impl Injector {
     ///     assert_eq!(None, injector.get_key(&k).await);
     ///     injector.update_key(&k, 1u32).await;
     ///     assert_eq!(Some(1u32), injector.get_key(&k).await);
-    ///     injector.clear_key(&k).await;
+    ///     assert!(injector.clear_key(&k).await.is_some());
     ///     assert_eq!(None, injector.get_key(&k).await);
     ///
     ///     Ok(())
     /// }
     /// ```
-    pub async fn clear_key<T>(&self, key: impl AsRef<Key<T>>)
+    pub async fn clear_key<T>(&self, key: impl AsRef<Key<T>>) -> Option<T>
     where
         T: Clone + Any + Send + Sync,
     {
         let key = key.as_ref().as_raw_key();
 
-        if let Some(storage) = self.inner.storage.write().await.get_mut(key) {
-            if storage.value.take().is_some() {
-                let _ = storage.subs.send(None);
-            }
-        };
+        let mut storage = self.inner.storage.write().await;
+        let storage = storage.get_mut(key)?;
+        let value = storage.value.take()?;
+        let _ = storage.subs.send(None);
+        Some(unsafe { value.downcast() })
     }
 
     /// Set the given value and notify any subscribers.
@@ -532,7 +543,7 @@ impl Injector {
     ///     assert_eq!(Some(1u32), injector.get::<u32>().await);
     /// }
     /// ```
-    pub async fn update<T>(&self, value: T)
+    pub async fn update<T>(&self, value: T) -> Option<T>
     where
         T: Clone + Any + Send + Sync,
     {
@@ -565,7 +576,7 @@ impl Injector {
     ///     Ok(())
     /// }
     /// ```
-    pub async fn update_key<T>(&self, key: impl AsRef<Key<T>>, value: T)
+    pub async fn update_key<T>(&self, key: impl AsRef<Key<T>>, value: T) -> Option<T>
     where
         T: Clone + Any + Send + Sync,
     {
@@ -574,7 +585,146 @@ impl Injector {
         let storage = storage.entry(key.clone()).or_default();
         let value = Value::new(value);
         let _ = storage.subs.send(Some(value.clone()));
-        storage.value = Some(value);
+        let old = storage.value.replace(value)?;
+        Some(unsafe { old.downcast() })
+    }
+
+    /// Test if a given value exists by type.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use async_injector::Injector;
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let injector = Injector::new();
+    ///
+    ///     assert_eq!(false, injector.exists::<u32>().await);
+    ///     injector.update(1u32).await;
+    ///     assert_eq!(true, injector.exists::<u32>().await);
+    /// }
+    /// ```
+    pub async fn exists<T>(&self) -> bool
+    where
+        T: Clone + Any + Send + Sync,
+    {
+        self.exists_key(&Key::<T>::of()).await
+    }
+
+    /// Test if a given value exists by key.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use async_injector::{Key, Injector};
+    /// use std::error::Error;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn Error>> {
+    ///     let injector = Injector::new();
+    ///     let k = Key::<u32>::tagged("foo")?;
+    ///
+    ///     assert_eq!(false, injector.exists_key(&k).await);
+    ///     injector.update_key(&k, 1u32).await;
+    ///     assert_eq!(true, injector.exists_key(&k).await);
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn exists_key<T>(&self, key: impl AsRef<Key<T>>) -> bool
+    where
+        T: Clone + Any + Send + Sync,
+    {
+        let key = key.as_ref().as_raw_key();
+
+        for c in self.chain() {
+            let storage = c.inner.storage.read().await;
+
+            if let Some(true) = storage.get(key).map(|s| s.value.is_some()) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Mutate the given value by type.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use async_injector::Injector;
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let injector = Injector::new();
+    ///
+    ///     injector.update(1u32).await;
+    ///
+    ///     let old = injector.mutate(|value: &mut u32| {
+    ///         let old = *value;
+    ///         *value += 1;
+    ///         old
+    ///     }).await;
+    ///
+    ///     assert_eq!(Some(1u32), old);
+    /// }
+    /// ```
+    pub async fn mutate<T, M, R>(&self, mutator: M) -> Option<R>
+    where
+        T: Clone + Any + Send + Sync,
+        M: FnMut(&mut T) -> R,
+    {
+        self.mutate_key(&Key::<T>::of(), mutator).await
+    }
+
+    /// Mutate the given value by key.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use async_injector::{Key, Injector};
+    /// use std::error::Error;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn Error>> {
+    ///     let injector = Injector::new();
+    ///     let k = Key::<u32>::tagged("foo")?;
+    ///
+    ///     injector.update_key(&k, 1u32).await;
+    ///
+    ///     let old = injector.mutate_key(&k, |value| {
+    ///         let old = *value;
+    ///         *value += 1;
+    ///         old
+    ///     }).await;
+    ///
+    ///     assert_eq!(Some(1u32), old);
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn mutate_key<T, M, R>(&self, key: impl AsRef<Key<T>>, mut mutator: M) -> Option<R>
+    where
+        T: Clone + Any + Send + Sync,
+        M: FnMut(&mut T) -> R,
+    {
+        let key = key.as_ref().as_raw_key();
+
+        for c in self.chain() {
+            let mut storage = c.inner.storage.write().await;
+
+            if let Some(storage) = storage.get_mut(key) {
+                if let Some(value) = &mut storage.value {
+                    let output = mutator(unsafe { value.downcast_mut() });
+                    let value = value.clone();
+                    let _ = storage.subs.send(Some(value));
+                    return Some(output);
+                }
+            }
+        }
+
+        None
     }
 
     /// Get a value from the injector.

@@ -379,13 +379,17 @@ fn impl_factory<'a>(
 
                         quote! {
                             match #clear().await {
-                                Some(output) => __injector.update::<#output>(output).await,
-                                None => __injector.clear::<#output>().await,
+                                Some(output) => {
+                                    __injector.update::<#output>(output).await;
+                                }
+                                None => {
+                                    let _ = __injector.clear::<#output>().await;
+                                }
                             }
                         }
                     }
                     None => quote! {
-                        __injector.clear::<#output>().await;
+                        let _ = __injector.clear::<#output>().await;
                     },
                 };
 
@@ -423,13 +427,17 @@ fn impl_factory<'a>(
 
             quote! {
                 match #build(builder).await {
-                    Some(output) => __injector.update::<#output>(output).await,
-                    None => __injector.clear::<#output>().await,
+                    Some(output) => {
+                        __injector.update::<#output>(output).await;
+                    }
+                    None => {
+                        let _ = __injector.clear::<#output>().await;
+                    }
                 }
             }
         }
         None => quote! {
-            __injector.clear::<#output>().await;
+            let _ = __injector.clear::<#output>().await;
         },
     };
 
