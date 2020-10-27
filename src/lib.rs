@@ -192,6 +192,11 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::sync::{broadcast, mpsc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+/// Internal type alias for the stream used to receive value updates.
+type ValueStream = dyn ::futures_util::stream::Stream<Item = Result<Option<Value>, broadcast::error::RecvError>>
+    + Send
+    + Sync;
+
 /// re-exports for the Provider derive.
 #[doc(hidden)]
 pub mod derive {
@@ -247,7 +252,7 @@ impl From<hashkey::Error> for Error {
 
 /// A stream of updates for values injected into this injector.
 pub struct Stream<T> {
-    rxs: ::futures_util::stream::SelectAll<broadcast::Receiver<Option<Value>>>,
+    rxs: ::futures_util::stream::SelectAll<Pin<Box<ValueStream>>>,
     marker: marker::PhantomData<T>,
 }
 
@@ -271,7 +276,7 @@ impl<T> tokio::stream::Stream for Stream<T> {
             match value {
                 Ok(value) => break value,
                 // NB: need to poll again.
-                Err(broadcast::RecvError::Lagged { .. }) => continue,
+                Err(broadcast::error::RecvError::Lagged { .. }) => continue,
                 _ => return Poll::Ready(None),
             };
         };
@@ -891,7 +896,7 @@ impl Injector {
             let mut storage = c.inner.storage.write().await;
             let storage = storage.entry(key.clone()).or_default();
 
-            rxs.push(storage.subs.subscribe());
+            rxs.push(Box::pin(storage.subs.subscribe().into_stream()) as Pin<Box<ValueStream>>);
 
             value = value.or_else(|| match storage.value.as_ref() {
                 Some(value) => {
