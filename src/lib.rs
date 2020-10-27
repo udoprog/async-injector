@@ -128,106 +128,87 @@
 //! }
 //! ```
 //!
-//! # Example using Provider
+//! # The `Provider` derive
 //!
-//! The following is an example application that receives configuration changes
-//! over HTTP.
+//! The following showcases how the [`Provider` derive] can be used to
+//! automatically construct and inject dependencies.
 //!
-//! ```rust,compile_fail
-//! use anyhow::Error;
-//! use async_injector::{Provider, Injector, Key, async_trait};
+//! ```rust,no_run
+//! use async_injector::{Injector, Key, Provider};
 //! use serde::Serialize;
+//! use tokio::stream::StreamExt as _;
 //!
-//! #[derive(Serialize)]
-//! pub enum Tag {
-//!    DatabaseUrl,
-//!    ConnectionLimit,
-//! }
-//!
-//! /// Provider that describes how to construct a database.
-//! #[derive(Provider)]
-//! #[provider(build = "DatabaseProvider::build", output = "Database")]
-//! struct DatabaseProvider {
-//!     #[dependency(tag = "Tag::DatabaseUrl")]
+//! /// Fake database connection.
+//! #[derive(Clone, Debug, PartialEq, Eq)]
+//! struct Database {
 //!     url: String,
-//!     #[dependency(tag = "Tag::DatabaseUrl")]
 //!     connection_limit: u32,
 //! }
 //!
-//! impl DatabaseProvider {
-//!     /// Constructor a new database and supply it to the injector.
-//!     async fn build(self) -> Option<Database> {
-//!         match Database::connect(&self.url, self.connection_limit).await {
-//!             Ok(database) => Some(database),
-//!             Err(e) => {
-//!                 log::warn!("failed to connect to database: {}: {}", self.url, e);
-//!                 None
-//!             }
-//!         }
+//! impl Database {
+//!     async fn build(provider: DatabaseProvider2) -> Option<Self> {
+//!         Some(Self {
+//!             url: provider.url,
+//!             connection_limit: provider.connection_limit,
+//!         })
 //!     }
 //! }
 //!
-//! /// A fake webserver handler.
-//! ///
-//! /// Note: there's no real HTTP framework that looks like this. This is just an
-//! /// example.
-//! async fn serve(injector: &Injector) -> Result<(), Error> {
-//!     let server = Server::new()?;
+//! /// Provider that describes how to construct a database.
+//! #[derive(Serialize)]
+//! pub enum Tag {
+//!     DatabaseUrl,
+//!     ConnectionLimit,
+//! }
 //!
-//!     // Fake endpoint to set the database URL.
-//!     server.on("POST", "/config/database/url", |url: String| {
-//!         injector.update_key(Key::tagged(Tag::DatabaseUrl)?, url);
-//!     });
+//! #[derive(Provider)]
+//! #[provider(output = "Database", build = "Database::build")]
+//! struct DatabaseProvider2 {
+//!     #[dependency(tag = "Tag::DatabaseUrl")]
+//!     url: String,
+//!     #[dependency(tag = "Tag::ConnectionLimit")]
+//!     connection_limit: u32,
+//! }
 //!
-//!     // Fake endpoint to set the database connection limit.
-//!     server.on("POST", "/config/database/connection-limit", |limit: u32| {
-//!         injector.update_key(Key::tagged(Tag::ConnectionLimit)?, limit);
-//!     });
+//! #[tokio::test]
+//! async fn test_provider() -> Result<(), Box<dyn std::error::Error>> {
+//!     let db_url_key = Key::<String>::tagged(Tag::DatabaseUrl)?;
+//!     let conn_limit_key = Key::<u32>::tagged(Tag::ConnectionLimit)?;
 //!
-//!     // Listen for requests.
-//!     server.await?;
+//!     let injector = Injector::new();
+//!     tokio::spawn(DatabaseProvider2::run(injector.clone()));
+//!
+//!     let (mut database_stream, database) = injector.stream::<Database>().await;
+//!
+//!     // None of the dependencies are available, so it hasn't been constructed.
+//!     assert!(database.is_none());
+//!
+//!     assert!(injector
+//!         .update_key(&db_url_key, String::from("example.com"))
+//!         .await
+//!         .is_none());
+//!
+//!     assert!(injector.update_key(&conn_limit_key, 5).await.is_none());
+//!
+//!     let new_database = database_stream
+//!         .next()
+//!         .await
+//!         .expect("unexpected end of stream");
+//!
+//!     // Database instance is available!
+//!     assert_eq!(
+//!         new_database,
+//!         Some(Database {
+//!             url: String::from("example.com"),
+//!             connection_limit: 5
+//!         })
+//!     );
+//!
 //!     Ok(())
 //! }
-//!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Error> {
-//!     let injector = Injector::new();
-//!
-//!     /// Setup database provider.
-//!     tokio::spawn({
-//!         let injector = injector.clone();
-//!
-//!         async move {
-//!             DatabaseProvider::run(&injector).await;
-//!         }
-//!     });
-//!
-//!     tokio::spawn({
-//!         let injector = injector.clone();
-//!
-//!         async move {
-//!             serve(&injector).await.expect("web server errored");
-//!         }
-//!     });
-//!
-//!     let (database_stream, database) = injector.stream::<Database>().await;
-//!
-//!     let application = Application::new(database);
-//!
-//!     loop {
-//!         tokio::select! {
-//!             // receive new databases when available.
-//!             database = database_stream.next() => {
-//!                 application.database = database;
-//!             },
-//!             // run the application to completion.
-//!             _ = &mut application => {
-//!                 log::info!("application finished");
-//!             },
-//!         }
-//!     }
-//! }
 //! ```
+//!
+//! [`Provider` derive]: https://docs.rs/async-injector-derive/0/async_injector_derive/derive.Provider.html
 
 #![deny(missing_docs)]
 

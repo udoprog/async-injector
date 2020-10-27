@@ -1,4 +1,7 @@
 //! Macros for [`async-injector`](https://docs.rs/async-injector).
+//!
+//! This provides the [Provider] derive, which can be used to automatically
+//! construct and inject dependencies. See its documentation for how to use.
 
 #![recursion_limit = "256"]
 
@@ -11,6 +14,79 @@ use syn::spanned::Spanned as _;
 use syn::*;
 
 /// Helper derive to implement a provider.
+///
+/// The `Provider` derive can only be used on struct. Each field designates a
+/// value that must either be injected, or provided during construction.
+///
+/// # Container attributes
+///
+/// The `#[provider]` attribute is an attribute that must be used.
+///
+/// The available attributes are:
+/// * `#[provider(output = "...")]` - which is used to specify the type of the
+///   provided value.
+/// * `#[provider(build = "...")]` (optional) - which can be used to specify a
+///   custom *build* function. If no build function is specified, the value will
+///   always be cleared.
+/// * `#[provider(clear = "...")]` (optional) - which can be used to specify a
+///   custom *clear* function.
+///
+/// We must specify the output type of the `Provider` using `#[provider(output =
+/// "...")]` like this:
+///
+/// ```rust,no_run
+/// use async_injector::Provider;
+///
+/// #[derive(Provider)]
+/// #[provider(output = "Database")]
+/// struct DatabaseProvider {
+///     #[dependency(tag = "\"url\"")]
+///     url: String,
+///     #[dependency]
+///     connection_limit: u32,
+/// }
+///
+/// #[derive(Debug, Clone)]
+/// struct Database;
+/// ```
+///
+/// # Field attributes
+///
+/// The `#[dependency]` attribute can be used to mark fields which need to be
+/// injected. It takes an optional `#[dependency(tag = "..")]`, which allows you
+/// to specify the tag to use when constructing the injected [Key].
+///
+/// ```rust,no_run
+/// use async_injector::Provider;
+///
+/// #[derive(Provider)]
+/// #[provider(output = "Database", build = "Database::build", clear = "Database::clear")]
+/// struct DatabaseProvider {
+///     #[dependency(tag = "\"url\"")]
+///     url: String,
+///     #[dependency]
+///     connection_limit: u32,
+/// }
+///
+/// #[derive(Debug, Clone)]
+/// struct Database {
+///     url: String,
+/// }
+///
+/// impl Database {
+///     /// Logic for how to build the injected value with all dependencies available.
+///     async fn build(provider: DatabaseProvider) -> Option<Self> {
+///         Some(Self {
+///             url: provider.url,
+///         })
+///     }
+///
+///     /// Logic for how to clear the injected value.
+///     async fn clear() -> Option<Self> {
+///         None
+///     }
+/// }
+/// ```
 ///
 /// # Examples
 ///
@@ -87,6 +163,8 @@ use syn::*;
 /// Ok(())
 /// # }
 /// ```
+///
+/// [Key]: https://docs.rs/async-injector/0/async_injector/struct.Key.html
 #[proc_macro_derive(Provider, attributes(provider, dependency))]
 pub fn provider_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let ast = syn::parse_macro_input!(input as DeriveInput);
@@ -184,21 +262,23 @@ fn provider_fields<'a>(st: &'a DataStruct) -> Vec<ProviderField<'a>> {
                     panic!("multiple #[dependency] attributes are not supported");
                 }
 
-                dependency = Some(if let Meta::Path(_) = meta {
+                let d = if let Meta::Path(_) = meta {
                     DependencyAttr::default()
                 } else {
                     match DependencyAttr::from_meta(&meta) {
                         Ok(d) => d,
                         Err(e) => panic!("bad #[dependency(..)] attribute: {}", e),
                     }
-                });
+                };
 
+                dependency = Some((meta.span(), d));
                 continue;
             }
         }
 
         let dependency = match dependency {
-            Some(dep) => Some(Dependency {
+            Some((span, dep)) => Some(Dependency {
+                span,
                 tag: match dep.tag {
                     Some(tag) => Some(
                         syn::parse_str::<TokenStream>(&tag).expect("`tag` to be valid expression"),
@@ -365,7 +445,7 @@ fn impl_factory<'a>(ast: &DeriveInput, config: &ProviderConfig<'a>) -> (TokenStr
                     };
                 });
 
-                provider_clone.push(quote! {
+                provider_clone.push(quote_spanned! { f.field.span() =>
                     let #field_ident: Option<String> = #field_ident.map(Clone::clone);
                 });
             } else {
@@ -374,14 +454,10 @@ fn impl_factory<'a>(ast: &DeriveInput, config: &ProviderConfig<'a>) -> (TokenStr
                         let clear = syn::parse_str::<TokenStream>(&clear)
                             .expect("`clear` to be valid expression");
 
-                        quote! {
+                        quote_spanned! { f.field.span() =>
                             match #clear().await {
-                                Some(output) => {
-                                    __injector.update::<#output>(output).await;
-                                }
-                                None => {
-                                    let _ = __injector.clear::<#output>().await;
-                                }
+                                Some(output) => { __injector.update::<#output>(output).await; }
+                                None => { let _ = __injector.clear::<#output>().await; }
                             }
                         }
                     }
@@ -390,7 +466,7 @@ fn impl_factory<'a>(ast: &DeriveInput, config: &ProviderConfig<'a>) -> (TokenStr
                     },
                 };
 
-                provider_extract.push(quote! {
+                provider_extract.push(quote_spanned! { f.field.span() =>
                     let #field_ident = match self.#field_ident.as_ref() {
                         Some(#field_ident) => #field_ident,
                         None => {
@@ -400,7 +476,7 @@ fn impl_factory<'a>(ast: &DeriveInput, config: &ProviderConfig<'a>) -> (TokenStr
                     };
                 });
 
-                provider_clone.push(quote! {
+                provider_clone.push(quote_spanned! { dep.span =>
                     let #field_ident = #field_ident.clone();
                 });
             };
@@ -409,7 +485,7 @@ fn impl_factory<'a>(ast: &DeriveInput, config: &ProviderConfig<'a>) -> (TokenStr
 
             provider_fields.push(quote!(#field_ident: #field_ty,));
 
-            provider_clone.push(quote! {
+            provider_clone.push(quote_spanned! { f.field.span() =>
                 let #field_ident = self.#field_ident.clone();
             });
         }
@@ -537,6 +613,7 @@ struct ProviderField<'a> {
 
 #[derive(Debug)]
 struct Dependency<'a> {
+    span: Span,
     /// Use a string tag.
     tag: Option<TokenStream>,
     optional: bool,
