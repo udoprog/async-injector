@@ -4,40 +4,64 @@
 [![Crates](https://img.shields.io/crates/v/async-injector.svg)](https://crates.io/crates/async-injector)
 [![Actions Status](https://github.com/udoprog/async-injector/workflows/Rust/badge.svg)](https://github.com/udoprog/async-injector/actions)
 
-Reactive dependency injection for Rust.
+Asynchronous reactive dependency injection for Rust.
 
-This project is _work in progress_. APIs will change.
+This crate provides a reactive dependency injection system that can
+reconfigure your application dynamically from changes in dependencies.
 
-## Rationale
+It allows for subscribing to changes in application configuration keys using
+asynchronous streams, like this:
 
-This component was extracted and cleaned up from [`OxidizeBot`].
+```rust
+use async_injector::Injector;
+use tokio::{stream::StreamExt as _, time};
+use std::error::Error;
 
-There it served as a central point for handling _live_ reconfiguration of the
-application, without the need to restart it.
+#[derive(Clone)]
+struct Database;
 
-This crate provides a reactive dependency injection system that can reconfigure
-your application dynamically from changes in your dependencies.
+#[tokio::main]
+async fn main() {
+    let injector = Injector::new();
+    let (mut database_stream, mut database) = injector.stream::<Database>().await;
 
-Using an `Injector` to deal with this complexity provides a nice option for a
-clean architecture.
+    // Insert the database dependency in a different task in the background.
+    tokio::spawn({
+        let injector = injector.clone();
 
-An injector is also a natural way for structuring an application that gracefully
-degrades during the absence of configuration: any part of the dependency tree
-that is not available can simply not be provided.
+        async move {
+            time::sleep(time::Duration::from_secs(2));
+            injector.update(Database).await;
+        }
+    });
 
-[`OxidizeBot`]: https://github.com/udoprog/OxidizeBot
+    assert!(database.is_none());
 
-## Example using `Key`s
+    // Every update to the stored type will be streamed, allowing you to
+    // react to it.
+    if let Some(update) = database_stream.next().await {
+        database = update;
+    }
 
-The following showcases how the injector can be shared across threads, and how
-you can distinguish between different keys of the same type (`u32`) using a
-serde-serializable tag (`Tag`).
-
-This example is runnable using:
-
+    assert!(database.is_some());
+}
 ```
-cargo run --example key_injector
-```
+
+With a bit of glue, this means that your application can be reconfigured
+without restarting it. Providing a richer user experience.
+
+### Example using `Key`
+
+The following showcases how the injector can be shared across threads, and
+how you can distinguish between different keys of the same type (`u32`)
+using a tag (`Tag`).
+
+The tag used must be serializable with [`serde`]. It must also not use any
+components which [cannot be hashed], like `f32` and `f64` (this will cause
+an error to be raised).
+
+[`serde`]: https://serde.rs
+[cannot be hashed]: https://internals.rust-lang.org/t/f32-f64-should-implement-hash/5436
 
 ```rust
 use async_injector::{Key, Injector};
@@ -111,24 +135,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
 The following is an example application that receives configuration changes
 over HTTP.
 
-```rust
+```rust,compile_fail
 use anyhow::Error;
 use async_injector::{Provider, Injector, Key, async_trait};
 use serde::Serialize;
 
 #[derive(Serialize)]
 pub enum Tag {
-    DatabaseUrl,
-    ConnectionLimit,
+   DatabaseUrl,
+   ConnectionLimit,
 }
 
 /// Provider that describes how to construct a database.
 #[derive(Provider)]
 #[provider(build = "DatabaseProvider::build", output = "Database")]
 struct DatabaseProvider {
-    #[dependency(tag = "Tag::Url")]
+    #[dependency(tag = "Tag::DatabaseUrl")]
     url: String,
-    #[dependency(tag = "Tag::ConnectionLimit")]
+    #[dependency(tag = "Tag::DatabaseUrl")]
     connection_limit: u32,
 }
 
@@ -193,13 +217,13 @@ async fn main() -> Result<(), Error> {
     let application = Application::new(database);
 
     loop {
-        futures::select! {
+        tokio::select! {
             // receive new databases when available.
             database = database_stream.next() => {
                 application.database = database;
             },
             // run the application to completion.
-            _ = application => {
+            _ = &mut application => {
                 log::info!("application finished");
             },
         }

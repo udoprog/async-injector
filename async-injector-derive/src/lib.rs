@@ -1,42 +1,4 @@
-//! Helper derive to implement a provider.
-//!
-//! # Examples
-//!
-//! ```rust,no_run
-//! use async_injector::{Provider, Injector, Key, async_trait};
-//! use serde::Serialize;
-//!
-//! /// Fake database connection.
-//! #[derive(Clone)]
-//! struct Database;
-//!
-//! /// Provider that describes how to construct a database.
-//! #[derive(Serialize)]
-//! pub enum Tag {
-//!     DatabaseUrl,
-//!     ConnectionLimit,
-//! }
-//!
-//! #[derive(Provider)]
-//! struct DatabaseProvider {
-//!     #[dependency(tag = "Tag::DatabaseUrl")]
-//!     url: String,
-//!     #[dependency(tag = "Tag::ConnectionLimit")]
-//!     connection_limit: u32,
-//! }
-//!
-//! #[async_trait]
-//! impl Provider for DatabaseProvider {
-//!     type Output = Database;
-//!
-//!     /// Constructor a new database and supply it to the injector.
-//!     async fn build(self) -> Option<Self::Output> {
-//!         println!("Url: {:?}", self.url);
-//!         println!("Connection Limit: {:?}", self.connection_limit);
-//!         None
-//!     }
-//! }
-//! ```
+//! Macros for [`async-injector`](https://docs.rs/async-injector).
 
 #![recursion_limit = "256"]
 
@@ -44,7 +6,8 @@ extern crate proc_macro;
 
 use darling::FromMeta;
 use proc_macro2::{Span, TokenStream};
-use quote::quote;
+use quote::{quote, quote_spanned};
+use syn::spanned::Spanned as _;
 use syn::*;
 
 /// Helper derive to implement a provider.
@@ -52,12 +15,25 @@ use syn::*;
 /// # Examples
 ///
 /// ```rust,no_run
-/// use async_injector::{Provider, Injector, Key, async_trait};
+/// use async_injector::{Injector, Key, Provider};
 /// use serde::Serialize;
+/// use tokio::stream::StreamExt as _;
 ///
 /// /// Fake database connection.
-/// #[derive(Clone)]
-/// struct Database;
+/// #[derive(Clone, Debug, PartialEq, Eq)]
+/// struct Database {
+///     url: String,
+///     connection_limit: u32,
+/// }
+///
+/// impl Database {
+///     async fn build(provider: DatabaseProvider2) -> Option<Self> {
+///         Some(Self {
+///             url: provider.url,
+///             connection_limit: provider.connection_limit,
+///         })
+///     }
+/// }
 ///
 /// /// Provider that describes how to construct a database.
 /// #[derive(Serialize)]
@@ -67,24 +43,49 @@ use syn::*;
 /// }
 ///
 /// #[derive(Provider)]
-/// struct DatabaseProvider {
+/// #[provider(output = "Database", build = "Database::build")]
+/// struct DatabaseProvider2 {
 ///     #[dependency(tag = "Tag::DatabaseUrl")]
 ///     url: String,
 ///     #[dependency(tag = "Tag::ConnectionLimit")]
 ///     connection_limit: u32,
 /// }
 ///
-/// #[async_trait]
-/// impl Provider for DatabaseProvider {
-///     type Output = Database;
+/// # #[tokio::main] async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let db_url_key = Key::<String>::tagged(Tag::DatabaseUrl)?;
+/// let conn_limit_key = Key::<u32>::tagged(Tag::ConnectionLimit)?;
 ///
-///     /// Constructor a new database and supply it to the injector.
-///     async fn build(self) -> Option<Self::Output> {
-///         println!("Url: {:?}", self.url);
-///         println!("Connection Limit: {:?}", self.connection_limit);
-///         None
-///     }
-/// }
+/// let injector = Injector::new();
+/// tokio::spawn(DatabaseProvider2::run(injector.clone()));
+///
+/// let (mut database_stream, database) = injector.stream::<Database>().await;
+///
+/// // None of the dependencies are available, so it hasn't been constructed.
+/// assert!(database.is_none());
+///
+/// assert!(injector
+///     .update_key(&db_url_key, String::from("example.com"))
+///     .await
+///     .is_none());
+///
+/// assert!(injector.update_key(&conn_limit_key, 5).await.is_none());
+///
+/// let new_database = database_stream
+///     .next()
+///     .await
+///     .expect("unexpected end of stream");
+///
+/// // Database instance is available!
+/// assert_eq!(
+///     new_database,
+///     Some(Database {
+///         url: String::from("example.com"),
+///         connection_limit: 5
+///     })
+/// );
+///
+/// Ok(())
+/// # }
 /// ```
 #[proc_macro_derive(Provider, attributes(provider, dependency))]
 pub fn provider_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -101,8 +102,8 @@ fn implement(ast: &DeriveInput) -> TokenStream {
     };
 
     let config = provider_config(ast, st);
-    let (factory, factory_ident) = impl_factory(&ast.vis, &ast.ident, &config);
-    let (builder, builder_ident) = impl_builder(&ast.vis, &ast.ident, &factory_ident, &config);
+    let (factory, factory_ident) = impl_factory(ast, &config);
+    let (builder, builder_ident) = impl_builder(ast, &factory_ident, &config);
     let maybe_run = impl_immediate_run(&config);
 
     let ident = &ast.ident;
@@ -227,12 +228,11 @@ fn provider_fields<'a>(st: &'a DataStruct) -> Vec<ProviderField<'a>> {
 
 /// Constructs a builder for the given provider.
 fn impl_builder<'a>(
-    vis: &Visibility,
-    ident: &Ident,
+    ast: &DeriveInput,
     factory_ident: &Ident,
     config: &ProviderConfig<'a>,
 ) -> (TokenStream, Ident) {
-    let ident = Ident::new(&format!("{}Builder", ident), Span::call_site());
+    let ident = Ident::new(&format!("{}Builder", ast.ident), Span::call_site());
 
     let mut field_idents = Vec::new();
     let mut builder_fields = Vec::new();
@@ -284,6 +284,7 @@ fn impl_builder<'a>(
         }
     }
 
+    let vis = &ast.vis;
     let generics = &config.generics;
 
     let builder = quote! {
@@ -320,12 +321,8 @@ fn impl_builder<'a>(
 ///
 /// This step is necessary to support "fixed" fields, i.e. fields who's value
 /// are provided at build time.
-fn impl_factory<'a>(
-    vis: &Visibility,
-    ident: &Ident,
-    config: &ProviderConfig<'a>,
-) -> (TokenStream, Ident) {
-    let factory_ident = Ident::new(&format!("{}Factory", ident), Span::call_site());
+fn impl_factory<'a>(ast: &DeriveInput, config: &ProviderConfig<'a>) -> (TokenStream, Ident) {
+    let factory_ident = Ident::new(&format!("{}Factory", ast.ident), Span::call_site());
 
     let mut provider_fields = Vec::new();
     let mut injected_fields_init = Vec::new();
@@ -427,12 +424,8 @@ fn impl_factory<'a>(
 
             quote! {
                 match #build(builder).await {
-                    Some(output) => {
-                        __injector.update::<#output>(output).await;
-                    }
-                    None => {
-                        let _ = __injector.clear::<#output>().await;
-                    }
+                    Some(output) => { __injector.update::<#output>(output).await; }
+                    None => { let _ = __injector.clear::<#output>().await; }
                 }
             }
         }
@@ -440,6 +433,8 @@ fn impl_factory<'a>(
             let _ = __injector.clear::<#output>().await;
         },
     };
+
+    let ident = &ast.ident;
 
     let provider_construct = quote! {
         let builder = #ident {
@@ -449,20 +444,25 @@ fn impl_factory<'a>(
         #build
     };
 
+    let vis = &ast.vis;
     let generics = &config.generics;
 
-    let factory = quote! {
+    let factory = quote_spanned! { ast.span() =>
         #vis struct #factory_ident#generics {
             #(#provider_fields)*
         }
 
         impl#generics #factory_ident#generics {
-            pub async fn run(mut self, __injector: &::async_injector::Injector) -> Result<(), ::async_injector::Error> {
+            pub async fn run(mut self, __injector: ::async_injector::Injector) -> Result<(), ::async_injector::Error> {
                 #(#injected_fields_init)*
 
+                let mut __injector_init = true;
+
                 loop {
-                    ::async_injector::derive::select! {
-                        #(#injected_update)*
+                    if !::std::mem::take(&mut __injector_init) {
+                        ::async_injector::derive::select! {
+                            #(#injected_update)*
+                        }
                     }
 
                     #(#provider_extract)*
@@ -514,7 +514,7 @@ fn impl_immediate_run<'a>(config: &ProviderConfig<'a>) -> Option<TokenStream> {
     }
 
     let run = quote! {
-        pub async fn run(__injector: &::async_injector::Injector) -> Result<(), ::async_injector::Error> {
+        pub async fn run(__injector: ::async_injector::Injector) -> Result<(), ::async_injector::Error> {
             let mut provider = Self::builder().build()?;
             provider.run(__injector).await
         }

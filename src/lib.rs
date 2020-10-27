@@ -1,10 +1,65 @@
-//! Asynchronous dependency injection for Rust.
+//! [![Documentation](https://docs.rs/async-injector/badge.svg)](https://docs.rs/async-injector)
+//! [![Crates](https://img.shields.io/crates/v/async-injector.svg)](https://crates.io/crates/async-injector)
+//! [![Actions Status](https://github.com/udoprog/async-injector/workflows/Rust/badge.svg)](https://github.com/udoprog/async-injector/actions)
 //!
-//! ## Example using `Key`s
+//! Asynchronous reactive dependency injection for Rust.
 //!
-//! The following showcases how the injector can be shared across threads, and how
-//! you can distinguish between different keys of the same type (`u32`) using a
-//! serde-serializable tag (`Tag`).
+//! This crate provides a reactive dependency injection system that can
+//! reconfigure your application dynamically from changes in dependencies.
+//!
+//! It allows for subscribing to changes in application configuration keys using
+//! asynchronous streams, like this:
+//!
+//! ```rust
+//! use async_injector::Injector;
+//! use tokio::{stream::StreamExt as _, time};
+//! use std::error::Error;
+//!
+//! #[derive(Clone)]
+//! struct Database;
+//!
+//! #[tokio::main]
+//! async fn main() {
+//!     let injector = Injector::new();
+//!     let (mut database_stream, mut database) = injector.stream::<Database>().await;
+//!
+//!     // Insert the database dependency in a different task in the background.
+//!     tokio::spawn({
+//!         let injector = injector.clone();
+//!
+//!         async move {
+//!             time::sleep(time::Duration::from_secs(2));
+//!             injector.update(Database).await;
+//!         }
+//!     });
+//!
+//!     assert!(database.is_none());
+//!
+//!     // Every update to the stored type will be streamed, allowing you to
+//!     // react to it.
+//!     if let Some(update) = database_stream.next().await {
+//!         database = update;
+//!     }
+//!
+//!     assert!(database.is_some());
+//! }
+//! ```
+//!
+//! With a bit of glue, this means that your application can be reconfigured
+//! without restarting it. Providing a richer user experience.
+//!
+//! ## Example using `Key`
+//!
+//! The following showcases how the injector can be shared across threads, and
+//! how you can distinguish between different keys of the same type (`u32`)
+//! using a tag (`Tag`).
+//!
+//! The tag used must be serializable with [`serde`]. It must also not use any
+//! components which [cannot be hashed], like `f32` and `f64` (this will cause
+//! an error to be raised).
+//!
+//! [`serde`]: https://serde.rs
+//! [cannot be hashed]: https://internals.rust-lang.org/t/f32-f64-should-implement-hash/5436
 //!
 //! ```rust,no_run
 //! use async_injector::{Key, Injector};
@@ -391,14 +446,18 @@ unsafe impl Sync for Value {}
 
 struct Storage {
     value: Option<Value>,
-    subs: broadcast::Sender<Option<Value>>,
+    tx: broadcast::Sender<Option<Value>>,
+    count: usize,
 }
 
 impl Default for Storage {
     fn default() -> Self {
-        let (subs, _) = broadcast::channel(1);
-
-        Self { value: None, subs }
+        let (tx, _) = broadcast::channel(1);
+        Self {
+            value: None,
+            tx,
+            count: 0,
+        }
     }
 }
 
@@ -522,7 +581,7 @@ impl Injector {
         let mut storage = self.inner.storage.write().await;
         let storage = storage.get_mut(key)?;
         let value = storage.value.take()?;
-        let _ = storage.subs.send(None);
+        let _ = storage.tx.send(None);
         Some(unsafe { value.downcast() })
     }
 
@@ -586,10 +645,11 @@ impl Injector {
         T: Clone + Any + Send + Sync,
     {
         let key = key.as_ref().as_raw_key();
+        let value = Value::new(T::from(value));
+
         let mut storage = self.inner.storage.write().await;
         let storage = storage.entry(key.clone()).or_default();
-        let value = Value::new(value);
-        let _ = storage.subs.send(Some(value.clone()));
+        let _ = storage.tx.send(Some(value.clone()));
         let old = storage.value.replace(value)?;
         Some(unsafe { old.downcast() })
     }
@@ -723,7 +783,7 @@ impl Injector {
                 if let Some(value) = &mut storage.value {
                     let output = mutator(unsafe { value.downcast_mut() });
                     let value = value.clone();
-                    let _ = storage.subs.send(Some(value));
+                    let _ = storage.tx.send(Some(value));
                     return Some(output);
                 }
             }
@@ -896,9 +956,11 @@ impl Injector {
             let mut storage = c.inner.storage.write().await;
             let storage = storage.entry(key.clone()).or_default();
 
-            rxs.push(Box::pin(storage.subs.subscribe().into_stream()) as Pin<Box<ValueStream>>);
+            let rx = storage.tx.subscribe();
+            storage.count += 1;
+            rxs.push(Box::pin(rx.into_stream()) as Pin<Box<ValueStream>>);
 
-            value = value.or_else(|| match storage.value.as_ref() {
+            value = value.or_else(|| match &storage.value {
                 Some(value) => {
                     // Safety: The expected type parameter is encoded and
                     // maintained in the Stream type.
@@ -1170,7 +1232,7 @@ where
     T: Any,
 {
     raw_key: RawKey,
-    marker: std::marker::PhantomData<T>,
+    _marker: std::marker::PhantomData<T>,
 }
 
 impl<T> fmt::Debug for Key<T>
@@ -1241,7 +1303,7 @@ where
     pub fn of() -> Self {
         Self {
             raw_key: RawKey::new::<T, ()>(hashkey::Key::Unit),
-            marker: std::marker::PhantomData,
+            _marker: std::marker::PhantomData,
         }
     }
 
@@ -1278,9 +1340,11 @@ where
     where
         K: Any + serde::Serialize,
     {
+        let tag = hashkey::to_key(&tag)?;
+
         Ok(Self {
-            raw_key: RawKey::new::<T, K>(hashkey::to_key(&tag)?),
-            marker: std::marker::PhantomData,
+            raw_key: RawKey::new::<T, K>(tag),
+            _marker: std::marker::PhantomData,
         })
     }
 

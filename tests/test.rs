@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use futures::prelude::*;
 
 use async_injector::{Error, Injector, Key, Provider};
@@ -7,7 +9,6 @@ pub enum Tag {
     A,
 }
 
-#[allow(unused)]
 #[derive(Provider)]
 #[provider(output = "()")]
 struct TestPlain {
@@ -15,7 +16,6 @@ struct TestPlain {
     foo: String,
 }
 
-#[allow(unused)]
 #[derive(Provider)]
 #[provider(output = "()")]
 struct TestTagged {
@@ -29,13 +29,11 @@ struct TestTagged {
 }
 
 impl TestTagged {
-    #[allow(unused)]
     fn bar_tag(fixed: &str) -> Tag {
         Tag::A
     }
 }
 
-#[allow(unused)]
 #[derive(Provider)]
 #[provider(output = "()")]
 struct TestFixed {
@@ -44,7 +42,6 @@ struct TestFixed {
     foo: String,
 }
 
-#[allow(unused)]
 #[derive(Provider)]
 #[provider(output = "()")]
 struct TestFixedLt<'a> {
@@ -53,7 +50,6 @@ struct TestFixedLt<'a> {
     foo: String,
 }
 
-#[allow(unused)]
 #[derive(Provider)]
 #[provider(output = "()")]
 struct TestOptional {
@@ -104,7 +100,7 @@ fn test_something() -> Result<(), Error> {
         });
 
         // Driver responsible for updating `Foo`.
-        let driver = Box::pin(driver.run(&injector));
+        let driver = Box::pin(driver.run(injector.clone()));
 
         let future = futures::future::select(driver, test);
         let _ = future.await;

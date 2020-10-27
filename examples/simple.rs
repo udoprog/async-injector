@@ -90,7 +90,7 @@ async fn main() -> Result<(), Error> {
 
     // Provides `Thing`.
     futures.push(Box::pin(async {
-        ThingProvider::run(&injector)
+        ThingProvider::run(injector.clone())
             .await
             .expect("injector not to error");
         Ok(())

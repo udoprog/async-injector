@@ -1,3 +1,3 @@
 # async-injector-derive
 
-Derives for simplifying injector construction.
+Macros for [`async-injector`](https://docs.rs/async-injector).
