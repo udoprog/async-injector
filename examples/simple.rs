@@ -74,7 +74,7 @@ async fn main() -> Result<(), Error> {
     // A thing that observes synchronized variables.
     let t2 = tokio::spawn(async move {
         loop {
-            tokio::time::delay_for(Duration::from_secs(1)).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
             let thing = thing_var.read().await;
             println!("Synchronized thing: {:?}", *thing);
 
