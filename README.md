@@ -14,7 +14,8 @@ asynchronous streams, like this:
 
 ```rust
 use async_injector::Injector;
-use tokio::{stream::StreamExt as _, time};
+use tokio::time;
+use tokio_stream::StreamExt as _;
 use std::error::Error;
 
 #[derive(Clone)]
@@ -67,7 +68,8 @@ an error to be raised).
 use async_injector::{Key, Injector};
 use serde::Serialize;
 use std::{error::Error, time::Duration};
-use tokio::{stream::StreamExt as _, time};
+use tokio::time;
+use tokio_stream::StreamExt as _;
 
 #[derive(Serialize)]
 enum Tag {
@@ -138,7 +140,7 @@ automatically construct and inject dependencies.
 ```rust
 use async_injector::{Injector, Key, Provider};
 use serde::Serialize;
-use tokio::stream::StreamExt as _;
+use tokio_stream::StreamExt as _;
 
 /// Fake database connection.
 #[derive(Clone, Debug, PartialEq, Eq)]

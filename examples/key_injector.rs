@@ -1,7 +1,8 @@
 use async_injector::{Injector, Key};
 use serde::Serialize;
 use std::{error::Error, time::Duration};
-use tokio::{stream::StreamExt as _, time};
+use tokio::time;
+use tokio_stream::StreamExt as _;
 
 #[derive(Serialize)]
 enum Tag {

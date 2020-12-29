@@ -12,7 +12,8 @@
 //!
 //! ```rust
 //! use async_injector::Injector;
-//! use tokio::{stream::StreamExt as _, time};
+//! use tokio::time;
+//! use tokio_stream::StreamExt as _;
 //! use std::error::Error;
 //!
 //! #[derive(Clone)]
@@ -65,7 +66,8 @@
 //! use async_injector::{Key, Injector};
 //! use serde::Serialize;
 //! use std::{error::Error, time::Duration};
-//! use tokio::{stream::StreamExt as _, time};
+//! use tokio::time;
+//! use tokio_stream::StreamExt as _;
 //!
 //! #[derive(Serialize)]
 //! enum Tag {
@@ -136,7 +138,7 @@
 //! ```rust,no_run
 //! use async_injector::{Injector, Key, Provider};
 //! use serde::Serialize;
-//! use tokio::stream::StreamExt as _;
+//! use tokio_stream::StreamExt as _;
 //!
 //! /// Fake database connection.
 //! #[derive(Clone, Debug, PartialEq, Eq)]
@@ -229,14 +231,15 @@ use std::task::{Context, Poll};
 use tokio::sync::{broadcast, mpsc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 /// Internal type alias for the stream used to receive value updates.
-type ValueStream = dyn ::futures_util::stream::Stream<Item = Result<Option<Value>, broadcast::error::RecvError>>
+type ValueStream = dyn ::tokio_stream::Stream<Item = Result<Option<Value>, broadcast::error::RecvError>>
     + Send
     + Sync;
 
 /// re-exports for the Provider derive.
 #[doc(hidden)]
 pub mod derive {
-    pub use tokio::{select, stream::StreamExt};
+    pub use tokio::select;
+    pub use tokio_stream::StreamExt;
 }
 
 #[macro_use]
@@ -292,7 +295,7 @@ pub struct Stream<T> {
     marker: marker::PhantomData<T>,
 }
 
-impl<T> tokio::stream::Stream for Stream<T> {
+impl<T> tokio_stream::Stream for Stream<T> {
     type Item = Option<T>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
@@ -847,7 +850,7 @@ impl Injector {
     ///
     /// ```rust
     /// use async_injector::Injector;
-    /// use tokio::stream::StreamExt as _;
+    /// use tokio_stream::StreamExt as _;
     /// use std::error::Error;
     ///
     /// #[derive(Clone)]
@@ -890,7 +893,7 @@ impl Injector {
     ///
     /// ```rust
     /// use async_injector::{Injector, Key};
-    /// use tokio::stream::StreamExt as _;
+    /// use tokio_stream::StreamExt as _;
     /// use std::error::Error;
     ///
     /// #[derive(Clone)]
@@ -939,7 +942,7 @@ impl Injector {
 
             let rx = storage.tx.subscribe();
             storage.count += 1;
-            rxs.push(Box::pin(rx.into_stream()) as Pin<Box<ValueStream>>);
+            rxs.push(Box::pin(into_stream(rx)) as Pin<Box<ValueStream>>);
 
             value = value.or_else(|| match &storage.value {
                 Some(value) => {
@@ -956,7 +959,18 @@ impl Injector {
             marker: marker::PhantomData,
         };
 
-        (stream, value)
+        return (stream, value);
+
+        fn into_stream(
+            mut rx: broadcast::Receiver<Option<Value>>,
+        ) -> impl ::tokio_stream::Stream<Item = Result<Option<Value>, broadcast::error::RecvError>>
+        {
+            async_stream::stream! {
+                loop {
+                    yield rx.recv().await;
+                }
+            }
+        }
     }
 
     /// Get a synchronized variable for the given configuration key.
@@ -965,7 +979,7 @@ impl Injector {
     ///
     /// ```rust
     /// use async_injector::Injector;
-    /// use tokio::stream::StreamExt as _;
+    /// use tokio_stream::StreamExt as _;
     /// use std::error::Error;
     ///
     /// #[derive(Clone)]
@@ -1010,7 +1024,7 @@ impl Injector {
     ///
     /// ```rust
     /// use async_injector::{Injector, Key};
-    /// use tokio::stream::StreamExt as _;
+    /// use tokio_stream::StreamExt as _;
     /// use std::error::Error;
     ///
     /// #[derive(Clone)]
@@ -1047,7 +1061,7 @@ impl Injector {
     where
         T: Clone + Any + Send + Sync + Unpin,
     {
-        use tokio::stream::StreamExt as _;
+        use tokio_stream::StreamExt as _;
 
         let (mut stream, value) = self.stream_key(key).await;
         let value = Var::new(value);
@@ -1080,7 +1094,7 @@ impl Injector {
     ///
     /// ```rust
     /// use async_injector::Injector;
-    /// use tokio::stream::StreamExt as _;
+    /// use tokio_stream::StreamExt as _;
     /// use std::error::Error;
     ///
     /// #[derive(Clone)]
@@ -1113,7 +1127,7 @@ impl Injector {
     /// }
     /// ```
     pub async fn drive(self) -> Result<(), Error> {
-        use tokio::stream::StreamExt as _;
+        use tokio_stream::StreamExt as _;
 
         let mut rx = self
             .inner
@@ -1127,12 +1141,12 @@ impl Injector {
 
         loop {
             while drivers.is_empty() {
-                drivers.push(rx.next().await.ok_or(Error::EndOfDriverStream)?);
+                drivers.push(rx.recv().await.ok_or(Error::EndOfDriverStream)?);
             }
 
             while !drivers.is_empty() {
                 tokio::select! {
-                    driver = rx.next() => {
+                    driver = rx.recv() => {
                         drivers.push(driver.ok_or(Error::EndOfDriverStream)?);
                     }
                     _ = drivers.next() => {
