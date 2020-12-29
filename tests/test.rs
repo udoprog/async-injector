@@ -62,7 +62,7 @@ struct Foo(Option<String>, String, String);
 
 #[test]
 fn test_something() -> Result<(), Error> {
-    let injector = Injector::new();
+    let (injector, driver) = async_injector::setup_with_driver();
 
     let bar_key = Key::<String>::tagged("bar")?;
     let driver = Test::builder().fixed("fixed").build()?;
@@ -133,7 +133,7 @@ fn test_something() -> Result<(), Error> {
 fn test_hierarchy() -> Result<(), Error> {
     use futures::prelude::*;
 
-    let injector = Injector::new();
+    let (injector, driver) = async_injector::setup_with_driver();
     let c1 = injector.child();
     let c2 = injector.child();
 
@@ -143,7 +143,7 @@ fn test_hierarchy() -> Result<(), Error> {
         let mut finished_updates = false;
         let mut finished_streams = false;
 
-        let driver = Box::pin(injector.clone().drive());
+        let driver = Box::pin(driver.drive());
 
         let (tx, rx) = futures::channel::oneshot::channel::<()>();
 

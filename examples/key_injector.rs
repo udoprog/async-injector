@@ -1,4 +1,4 @@
-use async_injector::{Injector, Key};
+use async_injector::Key;
 use serde::Serialize;
 use std::{error::Error, time::Duration};
 use tokio::time;
@@ -12,7 +12,7 @@ enum Tag {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let injector = Injector::new();
+    let injector = async_injector::setup();
     let one = Key::<u32>::tagged(Tag::One)?;
     let two = Key::<u32>::tagged(Tag::Two)?;
 

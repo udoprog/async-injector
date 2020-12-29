@@ -1,5 +1,5 @@
 use anyhow::Error;
-use async_injector::{Injector, Key, Provider};
+use async_injector::{Key, Provider};
 use futures::prelude::*;
 use std::{pin::Pin, sync::Arc};
 
@@ -39,7 +39,7 @@ impl ThingProvider {
 async fn main() -> Result<(), Error> {
     use std::{thread, time::Duration};
 
-    let injector = Injector::new();
+    let (injector, driver) = async_injector::setup_with_driver();
     let thread_injector = injector.clone();
 
     let title_key = Key::<String>::tagged("title")?;
@@ -97,7 +97,7 @@ async fn main() -> Result<(), Error> {
     }));
 
     // Keeps synchronized variables up-to-date.
-    futures.push(Box::pin(injector.clone().drive().map_err(Into::into)));
+    futures.push(Box::pin(driver.drive().map_err(Into::into)));
 
     // Future that observes changes to Thing.
     futures.push(Box::pin(async {
