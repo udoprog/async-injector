@@ -4,26 +4,39 @@
 [![Crates](https://img.shields.io/crates/v/async-injector.svg)](https://crates.io/crates/async-injector)
 [![Actions Status](https://github.com/udoprog/async-injector/workflows/Rust/badge.svg)](https://github.com/udoprog/async-injector/actions)
 
-Asynchronous reactive dependency injection for Rust.
+Asynchronous dependency injection for Rust.
 
-This crate provides a reactive dependency injection system that can
-reconfigure your application dynamically from changes in dependencies.
+This crate provides a dependency injection system that can be used to
+reactively reconfigure you're application while it's running. Reactive in
+this case refers to the application being reconfigured as-the-value changes,
+and not for other typical scenarios such as when it's being restarted.
 
-It allows for subscribing to changes in application configuration keys using
-asynchronous streams, like this:
+Values are provided as [Stream]s of updates that can be subscribed to as
+necessary throughout your application.
+
+## Examples
+
+In the following we'll showcase the injection of a *fake* `Database`. The
+idea here would be that if something about the database connection changes,
+a new instance of `Database` would be created and cause the application to
+update.
+
+> This is available as the `fake_database` example and you can run it
+> yourself using:
+> ```sh
+> cargo run --example fake_database
+> ```
 
 ```rust
-use async_injector::Injector;
 use tokio::time;
 use tokio_stream::StreamExt as _;
-use std::error::Error;
 
 #[derive(Clone)]
 struct Database;
 
 #[tokio::main]
 async fn main() {
-    let injector = Injector::new();
+    let injector = async_injector::setup();
     let (mut database_stream, mut database) = injector.stream::<Database>().await;
 
     // Insert the database dependency in a different task in the background.
@@ -31,7 +44,7 @@ async fn main() {
         let injector = injector.clone();
 
         async move {
-            time::sleep(time::Duration::from_secs(2));
+            time::sleep(time::Duration::from_secs(2)).await;
             injector.update(Database).await;
         }
     });
@@ -41,31 +54,35 @@ async fn main() {
     // Every update to the stored type will be streamed, allowing you to
     // react to it.
     if let Some(update) = database_stream.next().await {
+        println!("Updating database!");
         database = update;
+    } else {
+        panic!("No database update received :(");
     }
 
     assert!(database.is_some());
 }
 ```
 
+The [Injector] provides a structured broadcast system of updates, that can
+integrate cleanly into asynchronous contexts.
+
 With a bit of glue, this means that your application can be reconfigured
 without restarting it. Providing a richer user experience.
 
-### Example using `Key`
+### Injecting multiple things of the same type
 
-The following showcases how the injector can be shared across threads, and
-how you can distinguish between different keys of the same type (`u32`)
-using a tag (`Tag`).
+In the previous section you might've noticed that the injected value was
+solely discriminated by its type: `Database`. In this example we'll show how
+[Key] can be used to *tag* values of the same type under different names.
+This can be useful when dealing with overly generic types like [String].
 
-The tag used must be serializable with [`serde`]. It must also not use any
-components which [cannot be hashed], like `f32` and `f64` (this will cause
-an error to be raised).
-
-[`serde`]: https://serde.rs
-[cannot be hashed]: https://internals.rust-lang.org/t/f32-f64-should-implement-hash/5436
+The tag used must be serializable with [serde]. It must also not use any
+components which [cannot be hashed], like `f32` and `f64`. This will
+otherwise cause an error to be raised as it's being injected.
 
 ```rust
-use async_injector::{Key, Injector};
+use async_injector::Key;
 use serde::Serialize;
 use std::{error::Error, time::Duration};
 use tokio::time;
@@ -79,7 +96,7 @@ enum Tag {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let injector = Injector::new();
+    let injector = async_injector::setup();
     let one = Key::<u32>::tagged(Tag::One)?;
     let two = Key::<u32>::tagged(Tag::Two)?;
 
@@ -134,13 +151,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 ## The `Provider` derive
 
-The following showcases how the [`Provider` derive] can be used to
+The following showcases how the [Provider] derive can be used to
 automatically construct and inject dependencies.
 
 ```rust
-use async_injector::{Injector, Key, Provider};
+use async_injector::{Key, Provider};
 use serde::Serialize;
 use tokio_stream::StreamExt as _;
+use std::error::Error;
 
 /// Fake database connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -150,7 +168,7 @@ struct Database {
 }
 
 impl Database {
-    async fn build(provider: DatabaseProvider2) -> Option<Self> {
+    async fn build(provider: DatabaseProvider) -> Option<Self> {
         Some(Self {
             url: provider.url,
             connection_limit: provider.connection_limit,
@@ -167,7 +185,7 @@ pub enum Tag {
 
 #[derive(Provider)]
 #[provider(output = "Database", build = "Database::build")]
-struct DatabaseProvider2 {
+struct DatabaseProvider {
     #[dependency(tag = "Tag::DatabaseUrl")]
     url: String,
     #[dependency(tag = "Tag::ConnectionLimit")]
@@ -175,12 +193,12 @@ struct DatabaseProvider2 {
 }
 
 #[tokio::test]
-async fn test_provider() -> Result<(), Box<dyn std::error::Error>> {
+async fn test_provider() -> Result<(), Box<dyn Error>> {
     let db_url_key = Key::<String>::tagged(Tag::DatabaseUrl)?;
     let conn_limit_key = Key::<u32>::tagged(Tag::ConnectionLimit)?;
 
-    let injector = Injector::new();
-    tokio::spawn(DatabaseProvider2::run(injector.clone()));
+    let injector = async_injector::setup();
+    tokio::spawn(DatabaseProvider::run(injector.clone()));
 
     let (mut database_stream, database) = injector.stream::<Database>().await;
 
@@ -212,4 +230,9 @@ async fn test_provider() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-[`Provider` derive]: https://docs.rs/async-injector-derive/0/async_injector_derive/derive.Provider.html
+[cannot be hashed]: https://internals.rust-lang.org/t/f32-f64-should-implement-hash/5436
+[Injector]: https://docs.rs/async-injector/0/async_injector/struct.Injector.html
+[Key]: https://docs.rs/async-injector/0/async_injector/struct.Key.html
+[Provider]: https://docs.rs/async-injector-derive/0/async_injector_derive/derive.Provider.html
+[serde]: https://serde.rs
+[Stream]: https://docs.rs/futures-core/0/futures_core/stream/trait.Stream.html

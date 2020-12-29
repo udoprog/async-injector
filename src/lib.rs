@@ -2,18 +2,32 @@
 //! [![Crates](https://img.shields.io/crates/v/async-injector.svg)](https://crates.io/crates/async-injector)
 //! [![Actions Status](https://github.com/udoprog/async-injector/workflows/Rust/badge.svg)](https://github.com/udoprog/async-injector/actions)
 //!
-//! Asynchronous reactive dependency injection for Rust.
+//! Asynchronous dependency injection for Rust.
 //!
-//! This crate provides a reactive dependency injection system that can
-//! reconfigure your application dynamically from changes in dependencies.
+//! This crate provides a dependency injection system that can be used to
+//! reactively reconfigure you're application while it's running. Reactive in
+//! this case refers to the application being reconfigured as-the-value changes,
+//! and not for other typical scenarios such as when it's being restarted.
 //!
-//! It allows for subscribing to changes in application configuration keys using
-//! asynchronous streams, like this:
+//! Values are provided as [Stream]s of updates that can be subscribed to as
+//! necessary throughout your application.
 //!
-//! ```rust
+//! # Examples
+//!
+//! In the following we'll showcase the injection of a *fake* `Database`. The
+//! idea here would be that if something about the database connection changes,
+//! a new instance of `Database` would be created and cause the application to
+//! update.
+//!
+//! > This is available as the `fake_database` example and you can run it
+//! > yourself using:
+//! > ```sh
+//! > cargo run --example fake_database
+//! > ```
+//!
+//! ```rust,no_run
 //! use tokio::time;
 //! use tokio_stream::StreamExt as _;
-//! use std::error::Error;
 //!
 //! #[derive(Clone)]
 //! struct Database;
@@ -28,7 +42,7 @@
 //!         let injector = injector.clone();
 //!
 //!         async move {
-//!             time::sleep(time::Duration::from_secs(2));
+//!             time::sleep(time::Duration::from_secs(2)).await;
 //!             injector.update(Database).await;
 //!         }
 //!     });
@@ -38,28 +52,32 @@
 //!     // Every update to the stored type will be streamed, allowing you to
 //!     // react to it.
 //!     if let Some(update) = database_stream.next().await {
+//!         println!("Updating database!");
 //!         database = update;
+//!     } else {
+//!         panic!("No database update received :(");
 //!     }
 //!
 //!     assert!(database.is_some());
 //! }
 //! ```
 //!
+//! The [Injector] provides a structured broadcast system of updates, that can
+//! integrate cleanly into asynchronous contexts.
+//!
 //! With a bit of glue, this means that your application can be reconfigured
 //! without restarting it. Providing a richer user experience.
 //!
-//! ## Example using `Key`
+//! ## Injecting multiple things of the same type
 //!
-//! The following showcases how the injector can be shared across threads, and
-//! how you can distinguish between different keys of the same type (`u32`)
-//! using a tag (`Tag`).
+//! In the previous section you might've noticed that the injected value was
+//! solely discriminated by its type: `Database`. In this example we'll show how
+//! [Key] can be used to *tag* values of the same type under different names.
+//! This can be useful when dealing with overly generic types like [String].
 //!
-//! The tag used must be serializable with [`serde`]. It must also not use any
-//! components which [cannot be hashed], like `f32` and `f64` (this will cause
-//! an error to be raised).
-//!
-//! [`serde`]: https://serde.rs
-//! [cannot be hashed]: https://internals.rust-lang.org/t/f32-f64-should-implement-hash/5436
+//! The tag used must be serializable with [serde]. It must also not use any
+//! components which [cannot be hashed], like `f32` and `f64`. This will
+//! otherwise cause an error to be raised as it's being injected.
 //!
 //! ```rust,no_run
 //! use async_injector::Key;
@@ -131,13 +149,14 @@
 //!
 //! # The `Provider` derive
 //!
-//! The following showcases how the [`Provider` derive] can be used to
+//! The following showcases how the [Provider] derive can be used to
 //! automatically construct and inject dependencies.
 //!
 //! ```rust,no_run
-//! use async_injector::{Injector, Key, Provider};
+//! use async_injector::{Key, Provider};
 //! use serde::Serialize;
 //! use tokio_stream::StreamExt as _;
+//! use std::error::Error;
 //!
 //! /// Fake database connection.
 //! #[derive(Clone, Debug, PartialEq, Eq)]
@@ -147,7 +166,7 @@
 //! }
 //!
 //! impl Database {
-//!     async fn build(provider: DatabaseProvider2) -> Option<Self> {
+//!     async fn build(provider: DatabaseProvider) -> Option<Self> {
 //!         Some(Self {
 //!             url: provider.url,
 //!             connection_limit: provider.connection_limit,
@@ -164,7 +183,7 @@
 //!
 //! #[derive(Provider)]
 //! #[provider(output = "Database", build = "Database::build")]
-//! struct DatabaseProvider2 {
+//! struct DatabaseProvider {
 //!     #[dependency(tag = "Tag::DatabaseUrl")]
 //!     url: String,
 //!     #[dependency(tag = "Tag::ConnectionLimit")]
@@ -172,12 +191,12 @@
 //! }
 //!
 //! #[tokio::test]
-//! async fn test_provider() -> Result<(), Box<dyn std::error::Error>> {
+//! async fn test_provider() -> Result<(), Box<dyn Error>> {
 //!     let db_url_key = Key::<String>::tagged(Tag::DatabaseUrl)?;
 //!     let conn_limit_key = Key::<u32>::tagged(Tag::ConnectionLimit)?;
 //!
 //!     let injector = async_injector::setup();
-//!     tokio::spawn(DatabaseProvider2::run(injector.clone()));
+//!     tokio::spawn(DatabaseProvider::run(injector.clone()));
 //!
 //!     let (mut database_stream, database) = injector.stream::<Database>().await;
 //!
@@ -209,7 +228,12 @@
 //! }
 //! ```
 //!
-//! [`Provider` derive]: https://docs.rs/async-injector-derive/0/async_injector_derive/derive.Provider.html
+//! [cannot be hashed]: https://internals.rust-lang.org/t/f32-f64-should-implement-hash/5436
+//! [Injector]: https://docs.rs/async-injector/0/async_injector/struct.Injector.html
+//! [Key]: https://docs.rs/async-injector/0/async_injector/struct.Key.html
+//! [Provider]: https://docs.rs/async-injector-derive/0/async_injector_derive/derive.Provider.html
+//! [serde]: https://serde.rs
+//! [Stream]: https://docs.rs/futures-core/0/futures_core/stream/trait.Stream.html
 
 #![deny(missing_docs)]
 
@@ -247,9 +271,7 @@ extern crate async_injector_derive;
 #[doc(hidden)]
 pub use self::async_injector_derive::*;
 
-/// Errors that can be raised by various functions in the [`Injector`].
-///
-/// [`Injector`]: Injector
+/// Errors that can be raised by various functions in the [Injector].
 #[derive(Debug)]
 pub enum Error {
     /// Failed to perform work due to injector shutting down.
@@ -286,8 +308,27 @@ impl From<hashkey::Error> for Error {
     }
 }
 
-/// Error raised when the driver channel ends. This means that there are no
-/// injectors available.
+/// Error raised when the driver channel ends in [Driver::drive]. This means
+/// that there are no injectors available.
+///
+/// The typical way this is handled is through a panic when setting up the
+/// driver:
+///
+/// ```rust
+/// use std::error::Error;
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn Error>> {
+///     let (injector, driver) = async_injector::setup_with_driver();
+///
+///     tokio::spawn(async move {
+///         driver.drive().await.expect("injector driver failed");
+///     });
+///
+///     // use `injector`.
+///     Ok(())
+/// }
+/// ```
 #[derive(Debug)]
 pub struct EndOfDriverStream(());
 
@@ -299,33 +340,98 @@ impl fmt::Display for EndOfDriverStream {
 
 impl error::Error for EndOfDriverStream {}
 
-/// Construct a new injector.
+/// Construct an [Injector] without a [Driver].
 ///
 /// This returns the root injector and *discards* the corresponding driver. The
 /// driver is necessary in case any synchronized variables are used, like the
 /// ones created with [Injector::var] *will not* update.
+///
+/// # Examples
+///
+/// ```rust
+/// #[tokio::main]
+/// async fn main() {
+///     let injector = async_injector::setup();
+///
+///     assert_eq!(None, injector.get::<u32>().await);
+///     injector.update(1u32).await;
+///     assert_eq!(Some(1u32), injector.get::<u32>().await);
+///     assert!(injector.clear::<u32>().await.is_some());
+///     assert_eq!(None, injector.get::<u32>().await);
+/// }
+/// ```
+///
+/// Trying to use a synchronized [Var] with an injector that does not have a
+/// driver will fail with an error:
+///
+/// ```rust
+/// use tokio_stream::StreamExt as _;
+/// use std::error::Error;
+///
+/// #[derive(Clone)]
+/// struct Database;
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn Error>> {
+///     let injector = async_injector::setup();
+///     assert!(injector.var::<Database>().await.is_err());
+///     Ok(())
+/// }
+/// ```
 pub fn setup() -> Injector {
     Injector {
         inner: Arc::new(Inner {
             storage: Default::default(),
-            drivers: None,
+            tx: None,
             parent: None,
         }),
     }
 }
 
-/// Construct a new injector system with a driver.
+/// Construct an [Injector] with a [Driver].
 ///
 /// This returns the root injector and the corresponding driver. The driver is
 /// necessary in case any synchronized variables are used, like the ones created
 /// with [Injector::var].
+///
+/// # Examples
+///
+/// ```rust
+/// use tokio_stream::StreamExt as _;
+/// use std::error::Error;
+///
+/// #[derive(Clone)]
+/// struct Database;
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn Error>> {
+///     let (injector, driver) = async_injector::setup_with_driver();
+///
+///     // Drive variable updates.
+///     tokio::spawn(async move {
+///         driver.drive().await.expect("injector driver failed");
+///     });
+///
+///     let database = injector.var::<Database>().await?;
+///
+///     assert!(database.read().await.is_none());
+///     injector.update(Database).await;
+///
+///     /// Variable updated in the background by the driver.
+///     while database.read().await.is_none() {
+///     }
+///
+///     assert!(database.read().await.is_some());
+///     Ok(())
+/// }
+/// ```
 pub fn setup_with_driver() -> (Injector, Driver) {
-    let (drivers, rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(1);
 
     let injector = Injector {
         inner: Arc::new(Inner {
             storage: Default::default(),
-            drivers: Some(Box::new(drivers)),
+            tx: Some(Box::new(tx)),
             parent: None,
         }),
     };
@@ -334,7 +440,11 @@ pub fn setup_with_driver() -> (Injector, Driver) {
     (injector, driver)
 }
 
-/// A stream of updates for values injected into this injector.
+/// A stream of updates to a value in the [Injector].
+///
+/// This is created using [Injector::stream] or [Injector::stream_key] and can
+/// be used to make sure that an asynchronous process has access to the most
+/// up-to-date value from the injector.
 pub struct Stream<T> {
     rxs: ::futures_util::stream::SelectAll<Pin<Box<ValueStream>>>,
     marker: marker::PhantomData<T>,
@@ -390,26 +500,6 @@ struct Value {
     value_clone_fn: unsafe fn(*const ()) -> *const (),
     // drop function, to use when dropping the value.
     value_drop_fn: unsafe fn(*const ()),
-}
-
-impl Clone for Value {
-    fn clone(&self) -> Self {
-        let data = unsafe { (self.value_clone_fn)(self.data as *const _) };
-
-        Self {
-            data,
-            value_clone_fn: self.value_clone_fn,
-            value_drop_fn: self.value_drop_fn,
-        }
-    }
-}
-
-impl Drop for Value {
-    fn drop(&mut self) {
-        unsafe {
-            (self.value_drop_fn)(self.data);
-        }
-    }
 }
 
 impl Value {
@@ -473,32 +563,53 @@ impl Value {
 unsafe impl Send for Value {}
 unsafe impl Sync for Value {}
 
+impl Clone for Value {
+    fn clone(&self) -> Self {
+        let data = unsafe { (self.value_clone_fn)(self.data as *const _) };
+
+        Self {
+            data,
+            value_clone_fn: self.value_clone_fn,
+            value_drop_fn: self.value_drop_fn,
+        }
+    }
+}
+
+impl Drop for Value {
+    fn drop(&mut self) {
+        unsafe {
+            (self.value_drop_fn)(self.data);
+        }
+    }
+}
+
 struct Storage {
     value: Option<Value>,
     tx: broadcast::Sender<Option<Value>>,
-    count: usize,
 }
 
 impl Default for Storage {
     fn default() -> Self {
         let (tx, _) = broadcast::channel(1);
-        Self {
-            value: None,
-            tx,
-            count: 0,
-        }
+        Self { value: None, tx }
     }
 }
 
 struct Inner {
     storage: RwLock<HashMap<RawKey, Storage>>,
     /// Channel where new drivers are sent.
-    drivers: Option<Box<mpsc::UnboundedSender<TaskDriver>>>,
+    tx: Option<Box<mpsc::Sender<TaskDriver>>>,
     /// Parent injector for the current injector.
     parent: Option<Injector>,
 }
 
-/// Use for handling injection.
+/// An injector of dependencies.
+///
+/// Injectors are defined in hierarchies where an injector is either the root
+/// injector as created using [setup] or [setup_with_driver], or the child of
+/// another injector through [Injector::child].
+///
+/// Child injectors receive all the updates of their ancestors.
 #[derive(Clone)]
 pub struct Injector {
     inner: Arc<Inner>,
@@ -513,7 +624,7 @@ impl Injector {
         Self {
             inner: Arc::new(Inner {
                 storage: Default::default(),
-                drivers: self.inner.drivers.clone(),
+                tx: self.inner.tx.clone(),
                 parent: Some(self.clone()),
             }),
         }
@@ -530,8 +641,6 @@ impl Injector {
     /// # Examples
     ///
     /// ```rust
-    /// use async_injector::Injector;
-    ///
     /// #[tokio::main]
     /// async fn main() {
     ///     let injector = async_injector::setup();
@@ -602,8 +711,6 @@ impl Injector {
     /// # Examples
     ///
     /// ```rust
-    /// use async_injector::Injector;
-    ///
     /// #[tokio::main]
     /// async fn main() {
     ///     let injector = async_injector::setup();
@@ -665,8 +772,6 @@ impl Injector {
     /// # Examples
     ///
     /// ```rust
-    /// use async_injector::Injector;
-    ///
     /// #[tokio::main]
     /// async fn main() {
     ///     let injector = async_injector::setup();
@@ -709,7 +814,7 @@ impl Injector {
     {
         let key = key.as_ref().as_raw_key();
 
-        for c in self.chain() {
+        for c in self.ancestors() {
             let storage = c.inner.storage.read().await;
 
             if let Some(true) = storage.get(key).map(|s| s.value.is_some()) {
@@ -725,8 +830,6 @@ impl Injector {
     /// # Examples
     ///
     /// ```rust
-    /// use async_injector::Injector;
-    ///
     /// #[tokio::main]
     /// async fn main() {
     ///     let injector = async_injector::setup();
@@ -782,7 +885,7 @@ impl Injector {
     {
         let key = key.as_ref().as_raw_key();
 
-        for c in self.chain() {
+        for c in self.ancestors() {
             let mut storage = c.inner.storage.write().await;
 
             if let Some(storage) = storage.get_mut(key) {
@@ -803,8 +906,6 @@ impl Injector {
     /// # Examples
     ///
     /// ```rust
-    /// use async_injector::Injector;
-    ///
     /// #[tokio::main]
     /// async fn main() {
     ///     let injector = async_injector::setup();
@@ -853,7 +954,7 @@ impl Injector {
     {
         let key = key.as_ref().as_raw_key();
 
-        for c in self.chain() {
+        for c in self.ancestors() {
             let storage = c.inner.storage.read().await;
 
             if let Some(value) = storage.get(key).and_then(|s| s.value.as_ref()) {
@@ -871,7 +972,6 @@ impl Injector {
     /// # Examples
     ///
     /// ```rust
-    /// use async_injector::Injector;
     /// use tokio_stream::StreamExt as _;
     /// use std::error::Error;
     ///
@@ -958,12 +1058,11 @@ impl Injector {
         let mut rxs = ::futures_util::stream::SelectAll::new();
         let mut value = None;
 
-        for c in self.chain() {
+        for c in self.ancestors() {
             let mut storage = c.inner.storage.write().await;
             let storage = storage.entry(key.clone()).or_default();
 
             let rx = storage.tx.subscribe();
-            storage.count += 1;
             rxs.push(Box::pin(into_stream(rx)) as Pin<Box<ValueStream>>);
 
             value = value.or_else(|| match &storage.value {
@@ -1000,7 +1099,6 @@ impl Injector {
     /// # Examples
     ///
     /// ```rust
-    /// use async_injector::Injector;
     /// use tokio_stream::StreamExt as _;
     /// use std::error::Error;
     ///
@@ -1077,24 +1175,23 @@ impl Injector {
     {
         use tokio_stream::StreamExt as _;
 
-        let drivers = match &self.inner.drivers {
+        let tx = match &self.inner.tx {
             None => return Err(Error::NoDriver),
-            Some(drivers) => drivers,
+            Some(tx) => tx,
         };
 
         let (mut stream, value) = self.stream_key(key).await;
+
         let value = Var::new(value);
         let future_value = value.clone();
 
-        let future = async move {
-            while let Some(update) = stream.next().await {
-                *future_value.write().await = update;
-            }
-        };
-
-        let result = drivers.send(TaskDriver {
-            future: Box::pin(future),
-        });
+        let result = tx
+            .send(TaskDriver(Box::pin(async move {
+                while let Some(update) = stream.next().await {
+                    *future_value.write().await = update;
+                }
+            })))
+            .await;
 
         if result.is_err() {
             // NB: normally happens when the injector is shutting down.
@@ -1104,21 +1201,21 @@ impl Injector {
         Ok(value)
     }
 
-    /// Iterate through the chain of injectors.
+    /// Iterate through the ancestors of this injector.
+    ///
+    /// This includes the current injector as well.
     ///
     /// # Examples
     ///
     /// ```rust
-    /// use async_injector::Injector;
-    ///
     /// let injector = async_injector::setup();
     /// let child = injector.child();
     ///
-    /// assert_eq!(1, injector.chain().count());
-    /// assert_eq!(2, child.chain().count());
+    /// assert_eq!(1, injector.ancestors().count());
+    /// assert_eq!(2, child.ancestors().count());
     /// ```
-    pub fn chain(&self) -> Chain<'_> {
-        Chain {
+    pub fn ancestors(&self) -> Ancestors<'_> {
+        Ancestors {
             injector: Some(self),
         }
     }
@@ -1126,10 +1223,46 @@ impl Injector {
 
 /// The driver of the injector system.
 ///
+/// The driver is necessary in case any synchronized variables are used, like
+/// the ones created with [Injector::var]. If a driver is not present and
+/// *running*, synchronized variables will not be updated.
+///
 /// This should be driven using the [drive][Driver::drive] function.
+///
+/// # Examples
+///
+/// ```rust
+/// use tokio_stream::StreamExt as _;
+/// use std::error::Error;
+///
+/// #[derive(Clone)]
+/// struct Database;
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn Error>> {
+///     let (injector, driver) = async_injector::setup_with_driver();
+///
+///     // Drive variable updates.
+///     tokio::spawn(async move {
+///         driver.drive().await.expect("injector driver failed");
+///     });
+///
+///     let database = injector.var::<Database>().await?;
+///
+///     assert!(database.read().await.is_none());
+///     injector.update(Database).await;
+///
+///     /// Variable updated in the background by the driver.
+///     while database.read().await.is_none() {
+///     }
+///
+///     assert!(database.read().await.is_some());
+///     Ok(())
+/// }
+/// ```
 pub struct Driver {
     /// Receiver for drivers. Used by the run function.
-    rx: mpsc::UnboundedReceiver<TaskDriver>,
+    rx: mpsc::Receiver<TaskDriver>,
 }
 
 impl Driver {
@@ -1141,7 +1274,6 @@ impl Driver {
     /// # Examples
     ///
     /// ```rust
-    /// use async_injector::Injector;
     /// use tokio_stream::StreamExt as _;
     /// use std::error::Error;
     ///
@@ -1183,28 +1315,22 @@ impl Driver {
 
             while !drivers.is_empty() {
                 tokio::select! {
-                    driver = rx.recv() => {
-                        drivers.push(driver.ok_or(EndOfDriverStream(()))?);
-                    }
-                    _ = drivers.next() => {
-                    }
+                    driver = rx.recv() => drivers.push(driver.ok_or(EndOfDriverStream(()))?),
+                    _ = drivers.next() => (),
                 }
             }
         }
     }
 }
 
-/// A chain of [`Injector`]s.
+/// An iterator over the ancestors of a [Injector].
 ///
-/// A chain is composed of a child injector and all of its parents. This is
-/// created through [Injector::chain].
-///
-/// [`Injector`]: Injector
-pub struct Chain<'a> {
+/// This is created through [Injector::ancestors].
+pub struct Ancestors<'a> {
     injector: Option<&'a Injector>,
 }
 
-impl<'a> Iterator for Chain<'a> {
+impl<'a> Iterator for Ancestors<'a> {
     type Item = &'a Injector;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -1236,9 +1362,7 @@ impl RawKey {
     }
 }
 
-/// A key used to discriminate a value in the [`Injector`].
-///
-/// [`Injector`]: Injector
+/// A key used to discriminate a value in the [Injector].
 #[derive(Clone)]
 pub struct Key<T>
 where
@@ -1327,6 +1451,7 @@ where
     /// ```rust
     /// use serde::Serialize;
     /// use async_injector::Key;
+    /// use std::error::Error;
     ///
     /// struct Foo;
     ///
@@ -1342,7 +1467,7 @@ where
     ///     Two,
     /// }
     ///
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # fn main() -> Result<(), Box<dyn Error>> {
     /// assert_eq!(Key::<Foo>::tagged(Tag::One)?, Key::<Foo>::tagged(Tag::One)?);
     /// assert_ne!(Key::<Foo>::tagged(Tag::One)?, Key::<Foo>::tagged(Tag::Two)?);
     /// assert_ne!(Key::<Foo>::tagged(Tag::One)?, Key::<Foo>::tagged(Tag2::One)?);
@@ -1377,23 +1502,24 @@ where
 }
 
 /// The future that drives a synchronized variable.
-struct TaskDriver {
-    future: Pin<Box<dyn Future<Output = ()> + Send + Sync + 'static>>,
-}
+struct TaskDriver(Pin<Box<dyn Future<Output = ()> + Send + Sync + 'static>>);
 
 impl Future for TaskDriver {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.future.as_mut().poll(cx)
+        self.0.as_mut().poll(cx)
     }
 }
 
-/// Proxy accessor for an injected variable.
+/// A variable synchronized to a value in the [Injector].
 ///
-/// This stores a reference to the given variable and provides methods for
-/// accessing it, similarly to an `RwLock`, but biased towards efficient
-/// cloning.
+/// This can be created through [Injector::var] or [Injector::var_key], and will
+/// be kept in sync with the value inside of the injector by the [Driver].
+///
+/// Writing to this variable has *no effect* on the value inside of the
+/// injector. But if you're lazy, you can use this as a shorthand for an async
+/// `Arc<RwLock<T>>` type.
 #[derive(Debug)]
 pub struct Var<T> {
     storage: Arc<RwLock<T>>,
