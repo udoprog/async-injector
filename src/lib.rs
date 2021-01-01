@@ -426,12 +426,12 @@ pub fn setup() -> Injector {
 /// }
 /// ```
 pub fn setup_with_driver() -> (Injector, Driver) {
-    let (tx, rx) = mpsc::channel(1);
+    let (tx, rx) = mpsc::unbounded_channel();
 
     let injector = Injector {
         inner: Arc::new(Inner {
             storage: Default::default(),
-            tx: Some(Box::new(tx)),
+            tx: Some(tx),
             parent: None,
         }),
     };
@@ -598,7 +598,7 @@ impl Default for Storage {
 struct Inner {
     storage: RwLock<HashMap<RawKey, Storage>>,
     /// Channel where new drivers are sent.
-    tx: Option<Box<mpsc::Sender<TaskDriver>>>,
+    tx: Option<mpsc::UnboundedSender<TaskDriver>>,
     /// Parent injector for the current injector.
     parent: Option<Injector>,
 }
@@ -1185,13 +1185,11 @@ impl Injector {
         let value = Var::new(value);
         let future_value = value.clone();
 
-        let result = tx
-            .send(TaskDriver(Box::pin(async move {
-                while let Some(update) = stream.next().await {
-                    *future_value.write().await = update;
-                }
-            })))
-            .await;
+        let result = tx.send(TaskDriver(Box::pin(async move {
+            while let Some(update) = stream.next().await {
+                *future_value.write().await = update;
+            }
+        })));
 
         if result.is_err() {
             // NB: normally happens when the injector is shutting down.
@@ -1262,7 +1260,7 @@ impl Injector {
 /// ```
 pub struct Driver {
     /// Receiver for drivers. Used by the run function.
-    rx: mpsc::Receiver<TaskDriver>,
+    rx: mpsc::UnboundedReceiver<TaskDriver>,
 }
 
 impl Driver {
