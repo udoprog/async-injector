@@ -1214,7 +1214,11 @@ where
 /// [Injector].
 ///
 /// This can be created through [Injector::var] or [Injector::var_key].
-pub struct Ref<T> {
+#[derive(Clone)]
+pub struct Ref<T>
+where
+    T: Clone + Any + Send + Sync,
+{
     value: Arc<RwLock<Option<Value>>>,
     _m: marker::PhantomData<T>,
 }
@@ -1257,6 +1261,39 @@ where
         });
 
         result.ok()
+    }
+
+    /// Load the synchronized variable. This clones the underlying value if it
+    /// has been set.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::error::Error;
+    ///
+    /// #[derive(Clone)]
+    /// struct Database;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn Error>> {
+    ///     let injector = async_injector::Injector::new();
+    ///
+    ///     let database = injector.var::<Database>().await;
+    ///
+    ///     assert!(database.load().await.is_none());
+    ///     injector.update(Database).await;
+    ///     assert!(database.load().await.is_some());
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn load(&self) -> Option<T> {
+        let value = self.value.read().await;
+
+        match &*value {
+            // Safety: Ref<T> instances can only be produced by checked fns.
+            Some(value) => Some(unsafe { value.downcast_ref::<T>().clone() }),
+            None => None,
+        }
     }
 }
 

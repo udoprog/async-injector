@@ -36,7 +36,7 @@ struct Database;
 
 #[tokio::main]
 async fn main() {
-    let injector = async_injector::setup();
+    let injector = async_injector::Injector::new();
     let (mut database_stream, mut database) = injector.stream::<Database>().await;
 
     // Insert the database dependency in a different task in the background.
@@ -96,7 +96,7 @@ enum Tag {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let injector = async_injector::setup();
+    let injector = async_injector::Injector::new();
     let one = Key::<u32>::tagged(Tag::One)?;
     let two = Key::<u32>::tagged(Tag::Two)?;
 
@@ -197,7 +197,7 @@ async fn test_provider() -> Result<(), Box<dyn Error>> {
     let db_url_key = Key::<String>::tagged(Tag::DatabaseUrl)?;
     let conn_limit_key = Key::<u32>::tagged(Tag::ConnectionLimit)?;
 
-    let injector = async_injector::setup();
+    let injector = async_injector::Injector::new();
     tokio::spawn(DatabaseProvider::run(injector.clone()));
 
     let (mut database_stream, database) = injector.stream::<Database>().await;
