@@ -383,7 +383,6 @@ pub fn setup() -> Injector {
         inner: Arc::new(Inner {
             storage: Default::default(),
             tx: None,
-            parent: None,
         }),
     }
 }
@@ -432,7 +431,6 @@ pub fn setup_with_driver() -> (Injector, Driver) {
         inner: Arc::new(Inner {
             storage: Default::default(),
             tx: Some(tx),
-            parent: None,
         }),
     };
 
@@ -446,18 +444,18 @@ pub fn setup_with_driver() -> (Injector, Driver) {
 /// be used to make sure that an asynchronous process has access to the most
 /// up-to-date value from the injector.
 pub struct Stream<T> {
-    rxs: ::futures_util::stream::SelectAll<Pin<Box<ValueStream>>>,
+    rx: Pin<Box<ValueStream>>,
     marker: marker::PhantomData<T>,
 }
+
+impl<T> Unpin for Stream<T> {}
 
 impl<T> tokio_stream::Stream for Stream<T> {
     type Item = Option<T>;
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
-        let mut rxs = unsafe { Pin::map_unchecked_mut(self, |s| &mut s.rxs) };
-
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
         let value = loop {
-            let value = match rxs.as_mut().poll_next(cx) {
+            let value = match self.rx.as_mut().poll_next(cx) {
                 Poll::Ready(value) => value,
                 Poll::Pending => return Poll::Pending,
             };
@@ -483,12 +481,6 @@ impl<T> tokio_stream::Stream for Stream<T> {
         // Safety: The expected type parameter is encoded and maintained in the
         // Stream<T> type.
         Poll::Ready(Some(Some(unsafe { value.downcast::<T>() })))
-    }
-}
-
-impl<T> ::futures_util::stream::FusedStream for Stream<T> {
-    fn is_terminated(&self) -> bool {
-        self.rxs.is_terminated()
     }
 }
 
@@ -599,8 +591,6 @@ struct Inner {
     storage: RwLock<HashMap<RawKey, Storage>>,
     /// Channel where new drivers are sent.
     tx: Option<mpsc::UnboundedSender<TaskDriver>>,
-    /// Parent injector for the current injector.
-    parent: Option<Injector>,
 }
 
 /// An injector of dependencies.
@@ -616,20 +606,6 @@ pub struct Injector {
 }
 
 impl Injector {
-    /// Construct a new child injector.
-    ///
-    /// When a child injector is dropped, all associated listeners are cleaned
-    /// up as well.
-    pub fn child(&self) -> Injector {
-        Self {
-            inner: Arc::new(Inner {
-                storage: Default::default(),
-                tx: self.inner.tx.clone(),
-                parent: Some(self.clone()),
-            }),
-        }
-    }
-
     /// Get a value from the injector.
     ///
     /// This will cause the clear to be propagated to all streams set up using
@@ -813,16 +789,11 @@ impl Injector {
         T: Clone + Any + Send + Sync,
     {
         let key = key.as_ref().as_raw_key();
-
-        for c in self.ancestors() {
-            let storage = c.inner.storage.read().await;
-
-            if let Some(true) = storage.get(key).map(|s| s.value.is_some()) {
-                return true;
-            }
-        }
-
-        false
+        let storage = self.inner.storage.read().await;
+        storage
+            .get(key)
+            .map(|s| s.value.is_some())
+            .unwrap_or_default()
     }
 
     /// Mutate the given value by type.
@@ -884,17 +855,14 @@ impl Injector {
         M: FnMut(&mut T) -> R,
     {
         let key = key.as_ref().as_raw_key();
+        let mut storage = self.inner.storage.write().await;
 
-        for c in self.ancestors() {
-            let mut storage = c.inner.storage.write().await;
-
-            if let Some(storage) = storage.get_mut(key) {
-                if let Some(value) = &mut storage.value {
-                    let output = mutator(unsafe { value.downcast_mut() });
-                    let value = value.clone();
-                    let _ = storage.tx.send(Some(value));
-                    return Some(output);
-                }
+        if let Some(storage) = storage.get_mut(key) {
+            if let Some(value) = &mut storage.value {
+                let output = mutator(unsafe { value.downcast_mut() });
+                let value = value.clone();
+                let _ = storage.tx.send(Some(value));
+                return Some(output);
             }
         }
 
@@ -953,15 +921,12 @@ impl Injector {
         T: Clone + Any + Send + Sync,
     {
         let key = key.as_ref().as_raw_key();
+        let storage = self.inner.storage.read().await;
 
-        for c in self.ancestors() {
-            let storage = c.inner.storage.read().await;
-
-            if let Some(value) = storage.get(key).and_then(|s| s.value.as_ref()) {
-                // Safety: The expected type parameter is encoded and
-                // maintained in the Stream type.
-                return Some(unsafe { value.downcast_ref::<T>().clone() });
-            }
+        if let Some(value) = storage.get(key).and_then(|s| s.value.as_ref()) {
+            // Safety: The expected type parameter is encoded and
+            // maintained in the Stream type.
+            return Some(unsafe { value.downcast_ref::<T>().clone() });
         }
 
         None
@@ -1055,28 +1020,25 @@ impl Injector {
     {
         let key = key.as_ref().as_raw_key();
 
-        let mut rxs = ::futures_util::stream::SelectAll::new();
         let mut value = None;
 
-        for c in self.ancestors() {
-            let mut storage = c.inner.storage.write().await;
-            let storage = storage.entry(key.clone()).or_default();
+        let mut storage = self.inner.storage.write().await;
+        let storage = storage.entry(key.clone()).or_default();
 
-            let rx = storage.tx.subscribe();
-            rxs.push(Box::pin(into_stream(rx)) as Pin<Box<ValueStream>>);
+        let rx = storage.tx.subscribe();
+        let rx = Box::pin(into_stream(rx));
 
-            value = value.or_else(|| match &storage.value {
-                Some(value) => {
-                    // Safety: The expected type parameter is encoded and
-                    // maintained in the Stream type.
-                    Some(unsafe { value.downcast_ref::<T>().clone() })
-                }
-                None => None,
-            });
-        }
+        value = value.or_else(|| match &storage.value {
+            Some(value) => {
+                // Safety: The expected type parameter is encoded and
+                // maintained in the Stream type.
+                Some(unsafe { value.downcast_ref::<T>().clone() })
+            }
+            None => None,
+        });
 
         let stream = Stream {
-            rxs,
+            rx,
             marker: marker::PhantomData,
         };
 
@@ -1198,25 +1160,6 @@ impl Injector {
 
         Ok(value)
     }
-
-    /// Iterate through the ancestors of this injector.
-    ///
-    /// This includes the current injector as well.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// let injector = async_injector::setup();
-    /// let child = injector.child();
-    ///
-    /// assert_eq!(1, injector.ancestors().count());
-    /// assert_eq!(2, child.ancestors().count());
-    /// ```
-    pub fn ancestors(&self) -> Ancestors<'_> {
-        Ancestors {
-            injector: Some(self),
-        }
-    }
 }
 
 /// The driver of the injector system.
@@ -1318,23 +1261,6 @@ impl Driver {
                 }
             }
         }
-    }
-}
-
-/// An iterator over the ancestors of a [Injector].
-///
-/// This is created through [Injector::ancestors].
-pub struct Ancestors<'a> {
-    injector: Option<&'a Injector>,
-}
-
-impl<'a> Iterator for Ancestors<'a> {
-    type Item = &'a Injector;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let injector = self.injector.take()?;
-        self.injector = injector.inner.parent.as_ref();
-        Some(injector)
     }
 }
 

@@ -1,8 +1,7 @@
 #![allow(unused)]
 
-use futures::prelude::*;
-
 use async_injector::{Error, Injector, Key, Provider};
+use tokio_stream::StreamExt as _;
 
 #[derive(serde::Serialize)]
 pub enum Tag {
@@ -78,7 +77,7 @@ fn test_something() -> Result<(), Error> {
             injector.update::<String>(String::from("hello")).await;
             injector.update_key(&bar_key, String::from("world")).await;
 
-            let foo_update = foo_stream.select_next_some().await;
+            let foo_update = foo_stream.next().await.unwrap();
             let foo = foo_update.expect("value for Foo");
 
             assert_eq!(
@@ -93,7 +92,7 @@ fn test_something() -> Result<(), Error> {
             // Clearing bar should unset the value for `Foo`.
             injector.clear_key(&bar_key).await;
 
-            let foo_update = foo_stream.select_next_some().await;
+            let foo_update = foo_stream.next().await.unwrap();
             assert!(foo_update.is_none());
 
             finished = true;
@@ -127,64 +126,4 @@ fn test_something() -> Result<(), Error> {
             Some(Foo(Some(self.fixed.to_string()), self.foo, self.bar))
         }
     }
-}
-
-#[test]
-fn test_hierarchy() -> Result<(), Error> {
-    use futures::prelude::*;
-
-    let (injector, driver) = async_injector::setup_with_driver();
-    let c1 = injector.child();
-    let c2 = injector.child();
-
-    let key = Key::<String>::tagged("foo")?;
-
-    futures::executor::block_on(async move {
-        let mut finished_updates = false;
-        let mut finished_streams = false;
-
-        let driver = Box::pin(driver.drive());
-
-        let (tx, rx) = futures::channel::oneshot::channel::<()>();
-
-        let test1 = Box::pin(async {
-            let _ = rx.await.expect("successful receive");
-
-            injector.update_key(&key, String::from("a")).await;
-            c2.update_key(&key, String::from("b")).await;
-
-            assert_eq!("a", c1.get_key(&key).await.expect("expected value: a"));
-            assert_eq!("b", c2.get_key(&key).await.expect("expected value: b"));
-
-            finished_updates = true;
-        });
-
-        let test2 = Box::pin(async {
-            let (mut s1, _) = injector.stream_key(&key).await;
-            let (mut s2, _) = c1.stream_key(&key).await;
-            let (mut s3, _) = c2.stream_key(&key).await;
-
-            tx.send(()).expect("successful send");
-
-            let a = s1.select_next_some().await;
-            let b = s2.select_next_some().await;
-            let c = s3.select_next_some().await;
-
-            assert_eq!("a", a.expect("expected value: a"));
-            assert_eq!("a", b.expect("expected value: a"));
-            assert_eq!("b", c.expect("expected value: b"));
-
-            finished_streams = true;
-        });
-
-        let test = futures::future::join(test1, test2);
-
-        let future = futures::future::select(driver, test);
-        let _ = future.await;
-
-        assert!(finished_updates);
-        assert!(finished_streams);
-    });
-
-    Ok(())
 }
