@@ -93,7 +93,7 @@ use syn::*;
 /// ```rust,no_run
 /// use async_injector::{Injector, Key, Provider};
 /// use serde::Serialize;
-/// use tokio::stream::StreamExt as _;
+/// use tokio_stream::StreamExt as _;
 ///
 /// /// Fake database connection.
 /// #[derive(Clone, Debug, PartialEq, Eq)]

@@ -59,54 +59,53 @@ struct TestOptional {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Foo(Option<String>, String, String);
 
-#[test]
-fn test_something() -> Result<(), Error> {
-    let (injector, driver) = async_injector::setup_with_driver();
+#[tokio::test]
+async fn test_something() -> Result<(), Error> {
+    let injector = async_injector::Injector::new();
 
     let bar_key = Key::<String>::tagged("bar")?;
     let driver = Test::builder().fixed("fixed").build()?;
 
-    futures::executor::block_on(async move {
-        let mut finished = false;
+    let mut finished = false;
 
-        let test = Box::pin(async {
-            let (mut foo_stream, foo) = injector.stream::<Foo>().await;
-            assert!(foo.is_none());
+    let test = Box::pin(async {
+        let (mut foo_stream, foo) = injector.stream::<Foo>().await;
+        assert!(foo.is_none());
 
-            // Updating foo and bar should construct Foo.
-            injector.update::<String>(String::from("hello")).await;
-            injector.update_key(&bar_key, String::from("world")).await;
+        // Updating foo and bar should construct Foo.
+        injector.update::<String>(String::from("hello")).await;
+        injector.update_key(&bar_key, String::from("world")).await;
 
-            let foo_update = foo_stream.next().await.unwrap();
-            let foo = foo_update.expect("value for Foo");
+        let foo_update = foo_stream.next().await.unwrap();
+        let foo = foo_update.expect("value for Foo");
 
-            assert_eq!(
-                Foo(
-                    Some(String::from("fixed")),
-                    String::from("hello"),
-                    String::from("world")
-                ),
-                foo
-            );
+        assert_eq!(
+            Foo(
+                Some(String::from("fixed")),
+                String::from("hello"),
+                String::from("world")
+            ),
+            foo
+        );
 
-            // Clearing bar should unset the value for `Foo`.
-            injector.clear_key(&bar_key).await;
+        // Clearing bar should unset the value for `Foo`.
+        injector.clear_key(&bar_key).await;
 
-            let foo_update = foo_stream.next().await.unwrap();
-            assert!(foo_update.is_none());
+        let foo_update = foo_stream.next().await.unwrap();
+        assert!(foo_update.is_none());
 
-            finished = true;
-        });
-
-        // Driver responsible for updating `Foo`.
-        let driver = Box::pin(driver.run(injector.clone()));
-
-        let future = futures::future::select(driver, test);
-        let _ = future.await;
-
-        assert!(finished);
+        finished = true;
     });
 
+    // Driver responsible for updating `Foo`.
+    let driver = Box::pin(driver.run(injector.clone()));
+
+    tokio::select! {
+        _ = driver => {},
+        _ = test => {}
+    };
+
+    assert!(finished);
     return Ok(());
 
     #[derive(Provider)]

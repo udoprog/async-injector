@@ -6,7 +6,7 @@ struct Database;
 
 #[tokio::main]
 async fn main() {
-    let injector = async_injector::setup();
+    let injector = async_injector::Injector::new();
     let (mut database_stream, mut database) = injector.stream::<Database>().await;
 
     // Insert the database dependency in a different task in the background.

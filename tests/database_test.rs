@@ -39,7 +39,7 @@ async fn test_provider() -> Result<(), Box<dyn std::error::Error>> {
     let db_url_key = Key::<String>::tagged(Tag::DatabaseUrl)?;
     let conn_limit_key = Key::<u32>::tagged(Tag::ConnectionLimit)?;
 
-    let injector = async_injector::setup();
+    let injector = async_injector::Injector::new();
     tokio::spawn(DatabaseProvider2::run(injector.clone()));
 
     let (mut database_stream, database) = injector.stream::<Database>().await;

@@ -1,7 +1,7 @@
 use anyhow::Error;
 use async_injector::{Key, Provider};
-use futures::prelude::*;
-use std::{pin::Pin, sync::Arc};
+use std::sync::Arc;
+use tokio_stream::StreamExt as _;
 
 /// A simple dummy database for injection purposes.
 #[derive(Debug)]
@@ -39,7 +39,7 @@ impl ThingProvider {
 async fn main() -> Result<(), Error> {
     use std::{thread, time::Duration};
 
-    let (injector, driver) = async_injector::setup_with_driver();
+    let injector = async_injector::Injector::new();
     let thread_injector = injector.clone();
 
     let title_key = Key::<String>::tagged("title")?;
@@ -69,16 +69,16 @@ async fn main() -> Result<(), Error> {
 
     // Showcases using asynchronized variable to observe `Thing`.
     // This uses `parking_lot::RwLock`.
-    let thing_var = injector.var::<Thing>().await?;
+    let thing_var = injector.var::<Thing>().await;
 
     // A thing that observes synchronized variables.
     let t2 = tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
             let thing = thing_var.read().await;
-            println!("Synchronized thing: {:?}", *thing);
+            println!("Synchronized thing: {:?}", thing.as_deref());
 
-            if let Some(thing) = &*thing {
+            if let Some(thing) = thing.as_deref() {
                 if thing.title == "Bye Bye" {
                     break;
                 }
@@ -86,23 +86,13 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    let mut futures: Vec<Pin<Box<dyn Future<Output = Result<(), Error>>>>> = Vec::new();
-
     // Provides `Thing`.
-    futures.push(Box::pin(async {
-        ThingProvider::run(injector.clone())
-            .await
-            .expect("injector not to error");
-        Ok(())
-    }));
-
-    // Keeps synchronized variables up-to-date.
-    futures.push(Box::pin(driver.drive().map_err(Into::into)));
+    let driver = ThingProvider::run(injector.clone());
+    tokio::pin!(driver);
 
     // Future that observes changes to Thing.
-    futures.push(Box::pin(async {
+    let task = async {
         let (mut thing_stream, thing) = injector.stream::<Thing>().await;
-
         println!("First thing: {:?}", thing);
 
         while let Some(thing) = thing_stream.next().await {
@@ -114,12 +104,16 @@ async fn main() -> Result<(), Error> {
                 }
             }
         }
-
-        Ok(())
-    }));
+    };
+    tokio::pin!(task);
 
     // Just blocking over all futures, not checking errors.
-    let _ = futures::future::select_all(futures).await;
+    tokio::select! {
+        _ = task => {},
+        result = driver => {
+            result?;
+        },
+    }
 
     let _ = t.await.expect("thread didn't exit gracefully");
     let _ = t2.await.expect("thread didn't exit gracefully");
