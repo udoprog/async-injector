@@ -362,18 +362,18 @@ fn impl_provider<'a>(
             /// This is like combining [wait] and [build] in a manner that
             /// allows the value to be built without waiting for it the first
             /// time.
+            #[allow(dead_code)]
             #vis async fn update(&mut self) -> Option<#ident #generics> {
-                loop {
-                    if !::std::mem::take(&mut self.__init) {
-                        self.wait_for_update().await;
-                    }
-
-                    return self.build();
+                if !::std::mem::take(&mut self.__init) {
+                    self.wait_for_update().await;
                 }
+
+                self.build()
             }
 
             /// Try to construct the current value. Returns [None] unless all
             /// required dependencies are available.
+            #[allow(dead_code)]
             #vis fn build(&self) -> Option<#ident #generics> {
                 #(#provider_extract)*
 
@@ -383,9 +383,10 @@ fn impl_provider<'a>(
             }
 
             /// Wait for a dependency to be updated.
-            /// 
+            ///
             /// Once a dependency has been updated, the next call to [setup]
             /// will check all dependencies automatically.
+            #[allow(dead_code)]
             #vis async fn wait(&mut self) {
                 self.wait_for_update().await;
                 self.__init = true;
