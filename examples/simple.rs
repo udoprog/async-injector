@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use anyhow::Error;
 use async_injector::{Key, Provider};
 use std::sync::Arc;

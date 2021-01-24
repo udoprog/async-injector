@@ -268,19 +268,20 @@ fn impl_provider<'a>(
     let mut injected_update = Vec::new();
     let mut provider_extract = Vec::new();
     let mut initialized_fields = Vec::new();
+
     let mut fixed_args = Vec::new();
     let mut fixed_idents = Vec::new();
 
     for f in &config.fields {
         let field_ident = f.ident;
-
         let field_stream = Ident::new(&format!("{}_stream", field_ident), Span::call_site());
+        let field_value = Ident::new(&format!("{}_value", field_ident), Span::call_site());
 
         if let Some(dep) = &f.dependency {
             let field_ty = dep.ty;
 
             provider_fields.push(quote!(#field_stream: ::async_injector::Stream<#field_ty>));
-            provider_fields.push(quote!(#field_ident: Option<#field_ty>));
+            provider_fields.push(quote!(#field_value: Option<#field_ty>));
 
             let key = match &dep.tag {
                 Some(tag) => quote!(::async_injector::Key::<#field_ty>::tagged(#tag)?),
@@ -288,32 +289,32 @@ fn impl_provider<'a>(
             };
 
             constructor_assign.push(quote! {
-                let (#field_stream, #field_ident) = __injector.stream_key(#key).await;
+                let (#field_stream, #field_value) = __injector.stream_key(#key).await;
             });
 
-            constructor_fields.push(quote! { #field_stream });
-            constructor_fields.push(quote! { #field_ident });
+            constructor_fields.push(field_stream.clone());
+            constructor_fields.push(field_value.clone());
 
             injected_update.push(quote! {
-                Some(#field_ident) = ::async_injector::derive::StreamExt::next(&mut self.#field_stream) => {
-                    self.#field_ident = #field_ident;
+                Some(#field_value) = ::async_injector::derive::StreamExt::next(&mut self.#field_stream) => {
+                    self.#field_value = #field_value;
                 }
             });
 
             if dep.optional {
                 initialized_fields.push(quote_spanned! { f.field.span() =>
-                    #field_ident: self.#field_ident.as_ref().map(Clone::clone),
+                    #field_ident: self.#field_value.as_ref().map(Clone::clone),
                 });
             } else {
                 provider_extract.push(quote_spanned! { f.field.span() =>
-                    let #field_ident = match self.#field_ident.as_ref() {
-                        Some(#field_ident) => #field_ident,
+                    let #field_value = match self.#field_value.as_ref() {
+                        Some(#field_value) => #field_value,
                         None => return None,
                     };
                 });
 
                 initialized_fields.push(quote_spanned! { dep.span =>
-                    #field_ident: #field_ident.clone(),
+                    #field_ident: #field_value.clone(),
                 });
             };
         } else {
@@ -325,7 +326,7 @@ fn impl_provider<'a>(
                 #field_ident: self.#field_ident.clone(),
             });
 
-            constructor_fields.push(quote! { #field_ident });
+            constructor_fields.push(field_ident.clone());
 
             fixed_args.push(quote!(#field_ident: #field_ty));
             fixed_idents.push(field_ident.clone());
@@ -341,7 +342,7 @@ fn impl_provider<'a>(
     let provider = quote_spanned! { ast.span() =>
         #vis struct #provider_ident #generics {
             /// Whether or not the injector has been initialized.
-            __injector_init: bool,
+            __init: bool,
             #(#provider_fields,)*
         }
 
@@ -351,25 +352,48 @@ fn impl_provider<'a>(
                 #(#constructor_assign)*
 
                 Ok(#provider_ident {
-                    __injector_init: false,
+                    __init: false,
                     #(#constructor_fields,)*
                 })
             }
 
-            /// Update the provided value.
+            /// Update and try to build the provided value.
+            ///
+            /// This is like combining [wait] and [build] in a manner that
+            /// allows the value to be built without waiting for it the first
+            /// time.
             #vis async fn update(&mut self) -> Option<#ident #generics> {
                 loop {
-                    if !::std::mem::take(&mut self.__injector_init) {
-                        ::async_injector::derive::select! {
-                            #(#injected_update)*
-                        }
+                    if !::std::mem::take(&mut self.__init) {
+                        self.wait_for_update().await;
                     }
 
-                    #(#provider_extract)*
+                    return self.build();
+                }
+            }
 
-                    return Some(#ident {
-                        #(#initialized_fields)*
-                    });
+            /// Try to construct the current value. Returns [None] unless all
+            /// required dependencies are available.
+            #vis fn build(&self) -> Option<#ident #generics> {
+                #(#provider_extract)*
+
+                Some(#ident {
+                    #(#initialized_fields)*
+                })
+            }
+
+            /// Wait for a dependency to be updated.
+            /// 
+            /// Once a dependency has been updated, the next call to [setup]
+            /// will check all dependencies automatically.
+            #vis async fn wait(&mut self) {
+                self.wait_for_update().await;
+                self.__init = true;
+            }
+
+            async fn wait_for_update(&mut self) {
+                ::async_injector::derive::select! {
+                    #(#injected_update)*
                 }
             }
         }

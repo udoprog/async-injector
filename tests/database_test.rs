@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use async_injector::{Key, Provider};
 use serde::Serialize;
 use tokio_stream::StreamExt as _;
