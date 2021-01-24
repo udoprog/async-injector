@@ -18,19 +18,70 @@ use syn::*;
 /// The `Provider` derive can only be used on struct. Each field designates a
 /// value that must either be injected, or provided during construction.
 ///
-/// ```rust,no_run
+/// ```rust
 /// use async_injector::Provider;
+/// use serde::Serialize;
+///
+/// #[derive(Serialize)]
+/// enum Tag {
+///     Table,
+///     Url,
+/// }
 ///
 /// #[derive(Provider)]
-/// struct DatabaseProvider {
-///     #[dependency(tag = "\"url\"")]
+/// struct Deps {
+///     fixed: String,
+///     #[dependency(optional, tag = "Tag::Table")]
+///     table: Option<String>,
+///     #[dependency(tag = "Tag::Url")]
 ///     url: String,
 ///     #[dependency]
 ///     connection_limit: u32,
 /// }
+/// ```
 ///
-/// #[derive(Debug, Clone)]
-/// struct Database;
+/// This generates another struct call `<ident>Provider`, with the following
+/// functions:
+///
+/// ```rust,no_run
+/// use async_injector::{Error, Injector};
+///
+/// # struct Deps {}
+/// impl Deps {
+///     /// Construct a new provider.
+///     async fn provider(injector: &Injector, fixed: String) -> Result<DepsProvider, Error>
+///     # { todo!() }
+/// }
+///
+/// struct DepsProvider {
+///     /* private fields */
+/// }
+///
+/// impl DepsProvider {
+///     /// Try to construct the current value. Returns [None] unless all
+///     /// required dependencies are available.
+///     fn build(&mut self) -> Option<Deps>
+///     # { todo!() }
+///
+///     /// Wait for a dependency to be updated.
+///     ///
+///     /// Once a dependency has been updated, the next call to [setup]
+///     /// will eagerly try to build the dependency instead of waiting for
+///     /// another update.
+///     async fn wait(&mut self)
+///     # { todo!() }
+///
+///     /// Update and try to build the provided value.
+///     ///
+///     /// This is like combining [wait] and [build] in a manner that
+///     /// allows the value to be built without waiting for it the first
+///     /// time.
+///     ///
+///     /// The first call to [update] will return immediately, and subsequent
+///     /// calls will block for updates.
+///     async fn update(&mut self) -> Option<Deps>
+///     # { todo!() }
+/// }
 /// ```
 ///
 /// # Field attributes
@@ -357,6 +408,17 @@ fn impl_provider<'a>(
                 })
             }
 
+            /// Try to construct the current value. Returns [None] unless all
+            /// required dependencies are available.
+            #[allow(dead_code)]
+            #vis fn build(&self) -> Option<#ident #generics> {
+                #(#provider_extract)*
+
+                Some(#ident {
+                    #(#initialized_fields)*
+                })
+            }
+
             /// Update and try to build the provided value.
             ///
             /// This is like combining [wait] and [build] in a manner that
@@ -369,17 +431,6 @@ fn impl_provider<'a>(
                 }
 
                 self.build()
-            }
-
-            /// Try to construct the current value. Returns [None] unless all
-            /// required dependencies are available.
-            #[allow(dead_code)]
-            #vis fn build(&self) -> Option<#ident #generics> {
-                #(#provider_extract)*
-
-                Some(#ident {
-                    #(#initialized_fields)*
-                })
             }
 
             /// Wait for a dependency to be updated.
