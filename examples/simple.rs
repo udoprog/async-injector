@@ -3,7 +3,6 @@
 use anyhow::Error;
 use async_injector::{Key, Provider};
 use std::sync::Arc;
-use tokio_stream::StreamExt as _;
 
 /// A simple dummy database for injection purposes.
 #[derive(Debug)]
@@ -86,7 +85,8 @@ async fn main() -> Result<(), Error> {
         let (mut thing_stream, thing) = injector.stream::<Thing>().await;
         println!("First thing: {:?}", thing);
 
-        while let Some(thing) = thing_stream.next().await {
+        loop {
+            let thing = thing_stream.recv().await;
             println!("New thing: {:?}", thing);
 
             if let Some(thing) = thing {

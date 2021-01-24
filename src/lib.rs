@@ -27,7 +27,6 @@
 //!
 //! ```rust,no_run
 //! use tokio::time;
-//! use tokio_stream::StreamExt as _;
 //!
 //! #[derive(Clone)]
 //! struct Database;
@@ -48,16 +47,9 @@
 //!     });
 //!
 //!     assert!(database.is_none());
-//!
 //!     // Every update to the stored type will be streamed, allowing you to
 //!     // react to it.
-//!     if let Some(update) = database_stream.next().await {
-//!         println!("Updating database!");
-//!         database = update;
-//!     } else {
-//!         panic!("No database update received :(");
-//!     }
-//!
+//!     database = database_stream.recv().await;
 //!     assert!(database.is_some());
 //! }
 //! ```
@@ -84,7 +76,6 @@
 //! use serde::Serialize;
 //! use std::{error::Error, time::Duration};
 //! use tokio::time;
-//! use tokio_stream::StreamExt as _;
 //!
 //! #[derive(Serialize)]
 //! enum Tag {
@@ -134,11 +125,11 @@
 //!
 //!     loop {
 //!         tokio::select! {
-//!             Some(update) = one_stream.next() => {
+//!             update = one_stream.recv() => {
 //!                 one = update;
 //!                 println!("one: {:?}", one);
 //!             }
-//!             Some(update) = two_stream.next() => {
+//!             update = two_stream.recv() => {
 //!                 two = update;
 //!                 println!("two: {:?}", two);
 //!             }
@@ -165,7 +156,6 @@
 //! use serde::Serialize;
 //! use std::error::Error;
 //! use std::time::Duration;
-//! use tokio_stream::StreamExt as _;
 //!
 //! /// Fake database connection.
 //! #[derive(Clone, Debug, PartialEq, Eq)]
@@ -269,16 +259,9 @@ use std::fmt;
 use std::hash;
 use std::marker;
 use std::mem;
-use std::pin::Pin;
 use std::ptr;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 use tokio::sync::{broadcast, RwLock};
-
-/// Internal type alias for the stream used to receive value updates.
-type ValueStream = dyn ::tokio_stream::Stream<Item = Result<Option<Value>, broadcast::error::RecvError>>
-    + Send
-    + Sync;
 
 /// The read guard produced by [Ref::read].
 pub type RefReadGuard<'a, T> = tokio::sync::RwLockReadGuard<'a, T>;
@@ -287,7 +270,6 @@ pub type RefReadGuard<'a, T> = tokio::sync::RwLockReadGuard<'a, T>;
 #[doc(hidden)]
 pub mod derive {
     pub use tokio::select;
-    pub use tokio_stream::StreamExt;
 }
 
 #[macro_use]
@@ -331,43 +313,31 @@ impl From<hashkey::Error> for Error {
 /// be used to make sure that an asynchronous process has access to the most
 /// up-to-date value from the injector.
 pub struct Stream<T> {
-    rx: Pin<Box<ValueStream>>,
+    rx: broadcast::Receiver<Option<Value>>,
     marker: marker::PhantomData<T>,
 }
 
-impl<T> Unpin for Stream<T> {}
-
-impl<T> tokio_stream::Stream for Stream<T> {
-    type Item = Option<T>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
+impl<T> Stream<T> {
+    /// Receive the next injected element from the stream.
+    pub async fn recv(&mut self) -> Option<T> {
         let value = loop {
-            let value = match self.rx.as_mut().poll_next(cx) {
-                Poll::Ready(value) => value,
-                Poll::Pending => return Poll::Pending,
-            };
-
-            let value = match value {
-                Some(value) => value,
-                _ => return Poll::Ready(None),
-            };
+            let value = self.rx.recv().await;
 
             match value {
                 Ok(value) => break value,
-                // NB: need to poll again.
                 Err(broadcast::error::RecvError::Lagged { .. }) => continue,
-                _ => return Poll::Ready(None),
+                _ => return None,
             };
         };
 
         let value = match value {
             Some(value) => value,
-            _ => return Poll::Ready(Some(None)),
+            _ => return None,
         };
 
         // Safety: The expected type parameter is encoded and maintained in the
         // Stream<T> type.
-        Poll::Ready(Some(Some(unsafe { value.downcast::<T>() })))
+        Some(unsafe { value.downcast::<T>() })
     }
 }
 
@@ -884,10 +854,9 @@ impl Injector {
     /// # Examples
     ///
     /// ```rust
-    /// use tokio_stream::StreamExt as _;
     /// use std::error::Error;
     ///
-    /// #[derive(Clone)]
+    /// #[derive(Debug, Clone, PartialEq, Eq)]
     /// struct Database;
     ///
     /// #[tokio::main]
@@ -904,14 +873,13 @@ impl Injector {
     ///         }
     ///     });
     ///
-    ///     loop {
-    ///         tokio::select! {
-    ///             Some(update) = database_stream.next() => {
-    ///                 database = update;
-    ///                 break;
-    ///             }
+    ///     let database = loop {
+    ///         if let Some(update) = database_stream.recv().await {
+    ///             break update;
     ///         }
-    ///     }
+    ///     };
+    ///
+    ///     assert_eq!(database, Database);
     /// }
     /// ```
     pub async fn stream<T>(&self) -> (Stream<T>, Option<T>)
@@ -927,10 +895,9 @@ impl Injector {
     ///
     /// ```rust
     /// use async_injector::{Injector, Key};
-    /// use tokio_stream::StreamExt as _;
     /// use std::error::Error;
     ///
-    /// #[derive(Clone)]
+    /// #[derive(Debug, Clone, PartialEq, Eq)]
     /// struct Database;
     ///
     /// #[tokio::main]
@@ -949,15 +916,13 @@ impl Injector {
     ///         }
     ///     });
     ///
-    ///     loop {
-    ///         tokio::select! {
-    ///             Some(update) = database_stream.next() => {
-    ///                 database = update;
-    ///                 break;
-    ///             }
+    ///     let database = loop {
+    ///         if let Some(update) = database_stream.recv().await {
+    ///             break update;
     ///         }
-    ///     }
+    ///     };
     ///
+    ///     assert_eq!(database, Database);
     ///     Ok(())
     /// }
     /// ```
@@ -971,7 +936,6 @@ impl Injector {
         let storage = storage.entry(key.clone()).or_default();
 
         let rx = storage.tx.subscribe();
-        let rx = Box::pin(into_stream(rx));
 
         let value = storage.value.read().await;
 
@@ -989,18 +953,7 @@ impl Injector {
             marker: marker::PhantomData,
         };
 
-        return (stream, value);
-
-        fn into_stream(
-            mut rx: broadcast::Receiver<Option<Value>>,
-        ) -> impl ::tokio_stream::Stream<Item = Result<Option<Value>, broadcast::error::RecvError>>
-        {
-            async_stream::stream! {
-                loop {
-                    yield rx.recv().await;
-                }
-            }
-        }
+        (stream, value)
     }
 
     /// Get a synchronized reference for the given configuration key.

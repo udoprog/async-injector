@@ -3,7 +3,6 @@ use serde::Serialize;
 use std::error::Error;
 use std::time::Duration;
 use tokio::time;
-use tokio_stream::StreamExt as _;
 
 #[derive(Serialize)]
 enum Tag {
@@ -53,11 +52,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     loop {
         tokio::select! {
-            Some(update) = one_stream.next() => {
+            update = one_stream.recv() => {
                 one = update;
                 println!("one: {:?}", one);
             }
-            Some(update) = two_stream.next() => {
+            update = two_stream.recv() => {
                 two = update;
                 println!("two: {:?}", two);
             }

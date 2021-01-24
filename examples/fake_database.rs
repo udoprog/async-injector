@@ -1,5 +1,4 @@
 use tokio::time;
-use tokio_stream::StreamExt as _;
 
 #[derive(Clone)]
 struct Database;
@@ -20,15 +19,8 @@ async fn main() {
     });
 
     assert!(database.is_none());
-
-    // Every update to the stored type will be streamed, allowing you to
-    // react to it.
-    if let Some(update) = database_stream.next().await {
-        println!("Updating database!");
-        database = update;
-    } else {
-        panic!("No database update received :(");
-    }
-
+    // Every update to the stored type will be streamed, allowing you to react
+    // to it.
+    database = database_stream.recv().await;
     assert!(database.is_some());
 }

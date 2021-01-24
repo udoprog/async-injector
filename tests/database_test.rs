@@ -2,7 +2,6 @@
 
 use async_injector::{Key, Provider};
 use serde::Serialize;
-use tokio_stream::StreamExt as _;
 
 /// Fake database connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,10 +64,7 @@ async fn test_provider() -> Result<(), Box<dyn std::error::Error>> {
 
     assert!(injector.update_key(&conn_limit_key, 5).await.is_none());
 
-    let new_database = database_stream
-        .next()
-        .await
-        .expect("unexpected end of stream");
+    let new_database = database_stream.recv().await;
 
     // Database instance is available!
     assert_eq!(

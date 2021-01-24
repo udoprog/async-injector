@@ -347,7 +347,7 @@ fn impl_provider<'a>(
             constructor_fields.push(field_value.clone());
 
             injected_update.push(quote! {
-                Some(#field_value) = ::async_injector::derive::StreamExt::next(&mut self.#field_stream) => {
+                #field_value = self.#field_stream.recv() => {
                     self.#field_value = #field_value;
                 }
             });

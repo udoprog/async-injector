@@ -1,7 +1,6 @@
 #![allow(unused)]
 
 use async_injector::{Error, Injector, Key, Provider};
-use tokio_stream::StreamExt as _;
 
 #[derive(serde::Serialize)]
 pub enum Tag {
@@ -69,7 +68,7 @@ async fn test_something() -> Result<(), Error> {
         injector.update::<String>(String::from("hello")).await;
         injector.update_key(&bar_key, String::from("world")).await;
 
-        let foo_update = foo_stream.next().await.unwrap();
+        let foo_update = foo_stream.recv().await;
         let foo = foo_update.expect("value for Foo");
 
         assert_eq!(
@@ -84,7 +83,7 @@ async fn test_something() -> Result<(), Error> {
         // Clearing bar should unset the value for `Foo`.
         injector.clear_key(&bar_key).await;
 
-        let foo_update = foo_stream.next().await.unwrap();
+        let foo_update = foo_stream.recv().await;
         assert!(foo_update.is_none());
 
         finished.set(true);
