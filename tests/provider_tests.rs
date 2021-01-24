@@ -9,14 +9,12 @@ pub enum Tag {
 }
 
 #[derive(Provider)]
-#[provider(output = "()")]
 struct TestPlain {
     #[dependency]
     foo: String,
 }
 
 #[derive(Provider)]
-#[provider(output = "()")]
 struct TestTagged {
     fixed: String,
     #[dependency(tag = "\"bar\"")]
@@ -34,7 +32,6 @@ impl TestTagged {
 }
 
 #[derive(Provider)]
-#[provider(output = "()")]
 struct TestFixed {
     fixed: String,
     #[dependency(tag = "\"bar\"")]
@@ -42,7 +39,6 @@ struct TestFixed {
 }
 
 #[derive(Provider)]
-#[provider(output = "()")]
 struct TestFixedLt<'a> {
     fixed: &'a str,
     #[dependency(tag = "\"bar\"")]
@@ -50,25 +46,22 @@ struct TestFixedLt<'a> {
 }
 
 #[derive(Provider)]
-#[provider(output = "()")]
 struct TestOptional {
     #[dependency(optional)]
     foo: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Foo(Option<String>, String, String);
-
 #[tokio::test]
 async fn test_something() -> Result<(), Error> {
+    use std::cell::Cell;
+
     let injector = async_injector::Injector::new();
 
     let bar_key = Key::<String>::tagged("bar")?;
-    let driver = Test::builder().fixed("fixed").build()?;
 
-    let mut finished = false;
+    let finished = Cell::new(false);
 
-    let test = Box::pin(async {
+    let test = async {
         let (mut foo_stream, foo) = injector.stream::<Foo>().await;
         assert!(foo.is_none());
 
@@ -81,7 +74,7 @@ async fn test_something() -> Result<(), Error> {
 
         assert_eq!(
             Foo(
-                Some(String::from("fixed")),
+                String::from("fixed"),
                 String::from("hello"),
                 String::from("world")
             ),
@@ -94,22 +87,30 @@ async fn test_something() -> Result<(), Error> {
         let foo_update = foo_stream.next().await.unwrap();
         assert!(foo_update.is_none());
 
-        finished = true;
-    });
-
-    // Driver responsible for updating `Foo`.
-    let driver = Box::pin(driver.run(injector.clone()));
-
-    tokio::select! {
-        _ = driver => {},
-        _ = test => {}
+        finished.set(true);
     };
+    tokio::pin!(test);
 
-    assert!(finished);
+    let mut provider = Test::provider(&injector, "fixed").await?;
+
+    loop {
+        tokio::select! {
+            _ = &mut test => {
+                break;
+            },
+            update = provider.update() => {
+                match update {
+                    Some(update) => injector.update(Foo(update.fixed.to_string(), update.foo, update.bar)).await,
+                    None => injector.clear::<Foo>().await,
+                }
+            }
+        };
+    }
+
+    assert!(finished.get());
     return Ok(());
 
     #[derive(Provider)]
-    #[provider(build = "Test::build", output = "Foo")]
     struct Test<'a> {
         fixed: &'a str,
         /// Dependency to untagged foo.
@@ -120,9 +121,6 @@ async fn test_something() -> Result<(), Error> {
         bar: String,
     }
 
-    impl<'a> Test<'a> {
-        async fn build(self) -> Option<Foo> {
-            Some(Foo(Some(self.fixed.to_string()), self.foo, self.bar))
-        }
-    }
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Foo(String, String, String);
 }

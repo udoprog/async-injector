@@ -152,28 +152,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
 ## The `Provider` derive
 
 The following showcases how the [Provider] derive can be used to
-automatically construct and inject dependencies.
+conveniently wait for groups of dependencies to become available.
+
+Below we're waiting for two database parameters to become updated:
+* `url`
+* `connection_limit`
+
+Also note how they're being update asynchronously in a background thread to
+simulate being updated "somewhere else". This could be an update event
+caused by a multitude of things, like a configuration change in a frontend.
 
 ```rust
-use async_injector::{Key, Provider};
+use async_injector::{Key, Provider, Injector};
 use serde::Serialize;
-use tokio_stream::StreamExt as _;
 use std::error::Error;
+use std::time::Duration;
+use tokio_stream::StreamExt as _;
 
 /// Fake database connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Database {
     url: String,
     connection_limit: u32,
-}
-
-impl Database {
-    async fn build(provider: DatabaseProvider) -> Option<Self> {
-        Some(Self {
-            url: provider.url,
-            connection_limit: provider.connection_limit,
-        })
-    }
 }
 
 /// Provider that describes how to construct a database.
@@ -183,48 +183,71 @@ pub enum Tag {
     ConnectionLimit,
 }
 
+/// A group of database params to wait for until they become available.
 #[derive(Provider)]
-#[provider(output = "Database", build = "Database::build")]
-struct DatabaseProvider {
+struct DatabaseParams {
     #[dependency(tag = "Tag::DatabaseUrl")]
     url: String,
     #[dependency(tag = "Tag::ConnectionLimit")]
     connection_limit: u32,
 }
 
+async fn update_db_params(injector: Injector, db_url: Key<String>, connection_limit: Key<u32>) {
+    tokio::time::sleep(Duration::from_secs(2));
+
+    injector.update_key(&db_url, String::from("example.com")).await;
+    injector.update_key(&connection_limit, 5).await;
+}
+
+/// Fake service that runs for two seconds with a configured database.
+async fn service(db: Database) {
+    tokio::time::sleep(Duration::from_secs(2));
+}
+
 #[tokio::test]
 async fn test_provider() -> Result<(), Box<dyn Error>> {
-    let db_url_key = Key::<String>::tagged(Tag::DatabaseUrl)?;
-    let conn_limit_key = Key::<u32>::tagged(Tag::ConnectionLimit)?;
+    let db_url = Key::<String>::tagged(Tag::DatabaseUrl)?;
+    let connection_limit = Key::<u32>::tagged(Tag::ConnectionLimit)?;
 
-    let injector = async_injector::Injector::new();
-    tokio::spawn(DatabaseProvider::run(injector.clone()));
+    let injector = Injector::new();
 
-    let (mut database_stream, database) = injector.stream::<Database>().await;
+    /// Set up asynchronous task that updates the parameters in the background.
+    tokio::spawn(update_db_params(injector.clone(), db_url, connection_limit));
 
-    // None of the dependencies are available, so it hasn't been constructed.
-    assert!(database.is_none());
+    let provider = DatabaseParams::new(&injector).await?;
 
-    assert!(injector
-        .update_key(&db_url_key, String::from("example.com"))
-        .await
-        .is_none());
+    loop {
+        /// Wait until database is configured.
+        let database = loop {
+            if let Some(update) = provider.update().await {
+                break Database {
+                    url: update.url,
+                    connection_limit: update.connection_limit,
+                };
+            }
+        };
 
-    assert!(injector.update_key(&conn_limit_key, 5).await.is_none());
+        assert_eq!(
+            new_database,
+            Database {
+                url: String::from("example.com"),
+                connection_limit: 5
+            }
+        );
 
-    let new_database = database_stream
-        .next()
-        .await
-        .expect("unexpected end of stream");
-
-    // Database instance is available!
-    assert_eq!(
-        new_database,
-        Some(Database {
-            url: String::from("example.com"),
-            connection_limit: 5
-        })
-    );
+        loop {
+            tokio::select! {
+                _ = service(database.clone()) => {
+                    break;
+                }
+                update = provider.update().await {
+                    match update {
+                        None => break,
+                    }
+                }
+            }
+        }
+    }
 
     Ok(())
 }

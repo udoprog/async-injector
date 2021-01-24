@@ -18,21 +18,11 @@ struct Thing {
 
 /// Provider that describes how to construct a `Thing`.
 #[derive(Provider)]
-#[provider(build = "ThingProvider::build", output = "Thing")]
 struct ThingProvider {
     #[dependency(tag = "\"title\"")]
     title: String,
     #[dependency]
     db: Arc<Database>,
-}
-
-impl ThingProvider {
-    async fn build(self) -> Option<Thing> {
-        Some(Thing {
-            title: self.title,
-            db: self.db,
-        })
-    }
 }
 
 #[tokio::main]
@@ -87,8 +77,7 @@ async fn main() -> Result<(), Error> {
     });
 
     // Provides `Thing`.
-    let driver = ThingProvider::run(injector.clone());
-    tokio::pin!(driver);
+    let mut provider = ThingProvider::provider(&injector).await?;
 
     // Future that observes changes to Thing.
     let task = async {
@@ -110,8 +99,18 @@ async fn main() -> Result<(), Error> {
     // Just blocking over all futures, not checking errors.
     tokio::select! {
         _ = task => {},
-        result = driver => {
-            result?;
+        update = provider.update() => {
+            match update {
+                Some(update) => {
+                    injector.update(Thing {
+                        title: update.title,
+                        db: update.db,
+                    }).await;
+                }
+                None => {
+                    injector.clear::<Thing>().await;
+                }
+            }
         },
     }
 

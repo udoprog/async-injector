@@ -18,27 +18,10 @@ use syn::*;
 /// The `Provider` derive can only be used on struct. Each field designates a
 /// value that must either be injected, or provided during construction.
 ///
-/// # Container attributes
-///
-/// The `#[provider]` attribute is an attribute that must be used.
-///
-/// The available attributes are:
-/// * `#[provider(output = "...")]` - which is used to specify the type of the
-///   provided value.
-/// * `#[provider(build = "...")]` (optional) - which can be used to specify a
-///   custom *build* function. If no build function is specified, the value will
-///   always be cleared.
-/// * `#[provider(clear = "...")]` (optional) - which can be used to specify a
-///   custom *clear* function.
-///
-/// We must specify the output type of the `Provider` using `#[provider(output =
-/// "...")]` like this:
-///
 /// ```rust,no_run
 /// use async_injector::Provider;
 ///
 /// #[derive(Provider)]
-/// #[provider(output = "Database")]
 /// struct DatabaseProvider {
 ///     #[dependency(tag = "\"url\"")]
 ///     url: String,
@@ -60,31 +43,11 @@ use syn::*;
 /// use async_injector::Provider;
 ///
 /// #[derive(Provider)]
-/// #[provider(output = "Database", build = "Database::build", clear = "Database::clear")]
-/// struct DatabaseProvider {
+/// struct DatabaseParams {
 ///     #[dependency(tag = "\"url\"")]
 ///     url: String,
 ///     #[dependency]
 ///     connection_limit: u32,
-/// }
-///
-/// #[derive(Debug, Clone)]
-/// struct Database {
-///     url: String,
-/// }
-///
-/// impl Database {
-///     /// Logic for how to build the injected value with all dependencies available.
-///     async fn build(provider: DatabaseProvider) -> Option<Self> {
-///         Some(Self {
-///             url: provider.url,
-///         })
-///     }
-///
-///     /// Logic for how to clear the injected value.
-///     async fn clear() -> Option<Self> {
-///         None
-///     }
 /// }
 /// ```
 ///
@@ -102,15 +65,6 @@ use syn::*;
 ///     connection_limit: u32,
 /// }
 ///
-/// impl Database {
-///     async fn build(provider: DatabaseProvider2) -> Option<Self> {
-///         Some(Self {
-///             url: provider.url,
-///             connection_limit: provider.connection_limit,
-///         })
-///     }
-/// }
-///
 /// /// Provider that describes how to construct a database.
 /// #[derive(Serialize)]
 /// pub enum Tag {
@@ -119,8 +73,7 @@ use syn::*;
 /// }
 ///
 /// #[derive(Provider)]
-/// #[provider(output = "Database", build = "Database::build")]
-/// struct DatabaseProvider2 {
+/// struct DatabaseParams {
 ///     #[dependency(tag = "Tag::DatabaseUrl")]
 ///     url: String,
 ///     #[dependency(tag = "Tag::ConnectionLimit")]
@@ -132,7 +85,25 @@ use syn::*;
 /// let conn_limit_key = Key::<u32>::tagged(Tag::ConnectionLimit)?;
 ///
 /// let injector = Injector::new();
-/// tokio::spawn(DatabaseProvider2::run(injector.clone()));
+///
+/// let database_injector = injector.clone();
+/// let mut database = DatabaseParams::provider(&injector).await?;
+///
+/// tokio::spawn(async move {
+///     loop {
+///         match database.update().await {
+///             Some(update) => {
+///                 database_injector.update(Database {
+///                     url: update.url,
+///                     connection_limit: update.connection_limit,
+///                 }).await;
+///             }
+///             None => {
+///                 database_injector.clear::<Database>().await;
+///             }
+///         }
+///     }
+/// });
 ///
 /// let (mut database_stream, database) = injector.stream::<Database>().await;
 ///
@@ -165,85 +136,54 @@ use syn::*;
 /// ```
 ///
 /// [Key]: https://docs.rs/async-injector/0/async_injector/struct.Key.html
-#[proc_macro_derive(Provider, attributes(provider, dependency))]
+#[proc_macro_derive(Provider, attributes(dependency))]
 pub fn provider_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let ast = syn::parse_macro_input!(input as DeriveInput);
-    let gen = implement(&ast);
-    gen.into()
+
+    match implement(&ast) {
+        Ok(stream) => stream,
+        Err(e) => e.to_compile_error(),
+    }
+    .into()
 }
 
 /// Derive to implement the `Provider` trait.
-fn implement(ast: &DeriveInput) -> TokenStream {
+fn implement(ast: &DeriveInput) -> syn::Result<TokenStream> {
     let st = match ast.data {
         Data::Struct(ref st) => st,
         _ => panic!("`Provider` attribute is only supported on structs"),
     };
 
-    let config = provider_config(ast, st);
-    let (factory, factory_ident) = impl_factory(ast, &config);
-    let (builder, builder_ident) = impl_builder(ast, &factory_ident, &config);
-    let maybe_run = impl_immediate_run(&config);
+    let config = provider_config(st)?;
+    let (provider, provider_ident, fixed_args, fixed_idents) = impl_provider(ast, &config);
 
+    let vis = &ast.vis;
     let ident = &ast.ident;
     let generics = &ast.generics;
 
     let output = quote! {
-        #builder
-
-        #factory
-
-        impl#generics #ident#generics {
-            #maybe_run
-
-            pub fn builder() -> #builder_ident#generics {
-                #builder_ident::new()
+        impl #generics #ident #generics {
+            /// Construct a new provider for this type.
+            #vis async fn provider(injector: &::async_injector::Injector #(, #fixed_args)*) -> Result<#provider_ident #generics, ::async_injector::Error> {
+                #provider_ident::new(injector #(, #fixed_idents)*).await
             }
         }
+
+        #provider
     };
 
-    output
+    Ok(output)
 }
 
 /// Build a provider configuration.
-fn provider_config<'a>(ast: &'a DeriveInput, st: &'a DataStruct) -> ProviderConfig<'a> {
-    let fields = provider_fields(st);
-    let mut provider = None;
+fn provider_config<'a>(st: &'a DataStruct) -> syn::Result<ProviderConfig<'a>> {
+    let fields = provider_fields(st)?;
 
-    for a in &ast.attrs {
-        let meta = match a.parse_meta() {
-            Ok(meta) => meta,
-            _ => continue,
-        };
-
-        if meta.path().is_ident("provider") {
-            if provider.is_some() {
-                panic!("multiple #[provider] attributes are not supported");
-            }
-
-            provider = if let Meta::Path(_) = meta {
-                None
-            } else {
-                Some(match ProviderAttr::from_meta(&meta) {
-                    Ok(d) => d,
-                    Err(e) => panic!("bad #[provider(..)] attribute: {}", e),
-                })
-            };
-
-            continue;
-        }
-    }
-
-    let provider = provider.expect("missing #[provider(..)] attribute");
-
-    ProviderConfig {
-        fields,
-        provider,
-        generics: &ast.generics,
-    }
+    Ok(ProviderConfig { fields })
 }
 
 /// Extracts provider fields.
-fn provider_fields<'a>(st: &'a DataStruct) -> Vec<ProviderField<'a>> {
+fn provider_fields<'a>(st: &'a DataStruct) -> syn::Result<Vec<ProviderField<'a>>> {
     let mut fields = Vec::new();
 
     for field in &st.fields {
@@ -259,7 +199,10 @@ fn provider_fields<'a>(st: &'a DataStruct) -> Vec<ProviderField<'a>> {
 
             if meta.path().is_ident("dependency") {
                 if dependency.is_some() {
-                    panic!("multiple #[dependency] attributes are not supported");
+                    return Err(syn::Error::new(
+                        meta.span(),
+                        "multiple #[dependency] attributes are not supported",
+                    ));
                 }
 
                 let d = if let Meta::Path(_) = meta {
@@ -303,254 +246,136 @@ fn provider_fields<'a>(st: &'a DataStruct) -> Vec<ProviderField<'a>> {
         })
     }
 
-    fields
+    Ok(fields)
 }
 
-/// Constructs a builder for the given provider.
-fn impl_builder<'a>(
-    ast: &DeriveInput,
-    factory_ident: &Ident,
-    config: &ProviderConfig<'a>,
-) -> (TokenStream, Ident) {
-    let ident = Ident::new(&format!("{}Builder", ast.ident), Span::call_site());
-
-    let mut field_idents = Vec::new();
-    let mut builder_fields = Vec::new();
-    let mut builder_inits = Vec::new();
-    let mut builder_setters = Vec::new();
-    let mut builder_assign = Vec::new();
-
-    for f in &config.fields {
-        let field_ident = &f.ident;
-
-        field_idents.push(f.ident.clone());
-
-        if let Some(dep) = &f.dependency {
-            let field_ty = &dep.ty;
-
-            builder_fields.push(quote!(#field_ident: Option<#field_ty>,));
-            builder_inits.push(quote!(#field_ident: None,));
-            builder_assign.push(quote! {
-                let #field_ident = None;
-            });
-
-            let key = match &dep.tag {
-                Some(tag) => quote!(::async_injector::Key::<#field_ty>::tagged(#tag)?),
-                None => quote!(::async_injector::Key::<#field_ty>::of()),
-            };
-
-            let key_ident = &dep.key_field;
-            builder_assign.push(quote!(let #key_ident = #key;));
-            field_idents.push(key_ident.clone());
-        } else {
-            let field_ty = &f.field.ty;
-
-            builder_fields.push(quote!(#field_ident: Option<#field_ty>,));
-            builder_inits.push(quote!(#field_ident: None,));
-            builder_setters.push(quote! {
-                fn #field_ident(self, #field_ident: #field_ty) -> Self {
-                    Self {
-                        #field_ident: Some(#field_ident),
-                        ..self
-                    }
-                }
-            });
-
-            let message = format!("{}: expected value assigned in builder", field_ident);
-
-            builder_assign.push(quote! {
-                let #field_ident = self.#field_ident.expect(#message);
-            });
-        }
-    }
-
-    let vis = &ast.vis;
-    let generics = &config.generics;
-
-    let builder = quote! {
-        #vis struct #ident#generics {
-            #(#builder_fields)*
-        }
-
-        impl#generics #ident#generics {
-            pub fn new() -> Self {
-                Self {
-                    #(#builder_inits)*
-                }
-            }
-
-            pub fn build(self) -> Result<#factory_ident#generics, ::async_injector::Error> {
-                #(#builder_assign)*
-
-                Ok(#factory_ident {
-                    #(#field_idents,)*
-                })
-            }
-
-            #(#builder_setters)*
-        }
-    };
-
-    (builder, ident)
-}
-
-/// Build the factory instance.
+/// Build the provider type.
 ///
 /// The factory is responsible for building providers that builds instances of
 /// the provided type.
 ///
 /// This step is necessary to support "fixed" fields, i.e. fields who's value
 /// are provided at build time.
-fn impl_factory<'a>(ast: &DeriveInput, config: &ProviderConfig<'a>) -> (TokenStream, Ident) {
-    let factory_ident = Ident::new(&format!("{}Factory", ast.ident), Span::call_site());
+fn impl_provider<'a>(
+    ast: &DeriveInput,
+    config: &ProviderConfig<'a>,
+) -> (TokenStream, Ident, Vec<TokenStream>, Vec<Ident>) {
+    let provider_ident = Ident::new(&format!("{}Provider", ast.ident), Span::call_site());
 
     let mut provider_fields = Vec::new();
-    let mut injected_fields_init = Vec::new();
+    let mut constructor_assign = Vec::new();
+    let mut constructor_fields = Vec::new();
     let mut injected_update = Vec::new();
     let mut provider_extract = Vec::new();
-    let mut provider_clone = Vec::new();
     let mut initialized_fields = Vec::new();
-
-    let output = syn::parse_str::<TokenStream>(&config.provider.output)
-        .expect("`output` to be valid expression");
+    let mut fixed_args = Vec::new();
+    let mut fixed_idents = Vec::new();
 
     for f in &config.fields {
-        let field_ident = &f.ident;
+        let field_ident = f.ident;
 
         let field_stream = Ident::new(&format!("{}_stream", field_ident), Span::call_site());
 
         if let Some(dep) = &f.dependency {
             let field_ty = dep.ty;
-            let key_ident = &dep.key_field;
 
-            provider_fields.push(quote!(#field_ident: Option<#field_ty>,));
-            provider_fields.push(quote!(#key_ident: ::async_injector::Key<#field_ty>,));
+            provider_fields.push(quote!(#field_stream: ::async_injector::Stream<#field_ty>));
+            provider_fields.push(quote!(#field_ident: Option<#field_ty>));
 
-            injected_fields_init.push(quote! {
-                let (mut #field_stream, #field_ident) = __injector.stream_key(&self.#key_ident).await;
-                self.#field_ident = #field_ident;
+            let key = match &dep.tag {
+                Some(tag) => quote!(::async_injector::Key::<#field_ty>::tagged(#tag)?),
+                None => quote!(::async_injector::Key::<#field_ty>::of()),
+            };
+
+            constructor_assign.push(quote! {
+                let (#field_stream, #field_ident) = __injector.stream_key(#key).await;
             });
 
+            constructor_fields.push(quote! { #field_stream });
+            constructor_fields.push(quote! { #field_ident });
+
             injected_update.push(quote! {
-                #field_ident = ::async_injector::derive::StreamExt::next(&mut #field_stream) => {
-                    self.#field_ident = #field_ident.unwrap();
+                Some(#field_ident) = ::async_injector::derive::StreamExt::next(&mut self.#field_stream) => {
+                    self.#field_ident = #field_ident;
                 }
             });
 
             if dep.optional {
-                provider_extract.push(quote! {
-                    let #field_ident = match self.#field_ident.as_ref() {
-                        Some(#field_ident) => Some(#field_ident),
-                        None => None,
-                    };
-                });
-
-                provider_clone.push(quote_spanned! { f.field.span() =>
-                    let #field_ident: Option<String> = #field_ident.map(Clone::clone);
+                initialized_fields.push(quote_spanned! { f.field.span() =>
+                    #field_ident: self.#field_ident.as_ref().map(Clone::clone),
                 });
             } else {
-                let clear = match &config.provider.clear {
-                    Some(clear) => {
-                        let clear = syn::parse_str::<TokenStream>(&clear)
-                            .expect("`clear` to be valid expression");
-
-                        quote_spanned! { f.field.span() =>
-                            match #clear().await {
-                                Some(output) => { __injector.update::<#output>(output).await; }
-                                None => { let _ = __injector.clear::<#output>().await; }
-                            }
-                        }
-                    }
-                    None => quote! {
-                        let _ = __injector.clear::<#output>().await;
-                    },
-                };
-
                 provider_extract.push(quote_spanned! { f.field.span() =>
                     let #field_ident = match self.#field_ident.as_ref() {
                         Some(#field_ident) => #field_ident,
-                        None => {
-                            #clear
-                            continue;
-                        },
+                        None => return None,
                     };
                 });
 
-                provider_clone.push(quote_spanned! { dep.span =>
-                    let #field_ident = #field_ident.clone();
+                initialized_fields.push(quote_spanned! { dep.span =>
+                    #field_ident: #field_ident.clone(),
                 });
             };
         } else {
             let field_ty = &f.field.ty;
 
-            provider_fields.push(quote!(#field_ident: #field_ty,));
+            provider_fields.push(quote!(#field_ident: #field_ty));
 
-            provider_clone.push(quote_spanned! { f.field.span() =>
-                let #field_ident = self.#field_ident.clone();
+            initialized_fields.push(quote_spanned! { f.field.span() =>
+                #field_ident: self.#field_ident.clone(),
             });
-        }
 
-        initialized_fields.push(quote!(#field_ident,));
+            constructor_fields.push(quote! { #field_ident });
+
+            fixed_args.push(quote!(#field_ident: #field_ty));
+            fixed_idents.push(field_ident.clone());
+        }
     }
-
-    let build = match &config.provider.build {
-        Some(build) => {
-            let build =
-                syn::parse_str::<TokenStream>(&build).expect("`build` to be valid expression");
-
-            quote! {
-                match #build(builder).await {
-                    Some(output) => { __injector.update::<#output>(output).await; }
-                    None => { let _ = __injector.clear::<#output>().await; }
-                }
-            }
-        }
-        None => quote! {
-            let _ = __injector.clear::<#output>().await;
-        },
-    };
 
     let ident = &ast.ident;
 
-    let provider_construct = quote! {
-        let builder = #ident {
-            #(#initialized_fields)*
-        };
-
-        #build
-    };
-
     let vis = &ast.vis;
-    let generics = &config.generics;
+    let generics = &ast.generics;
+    let args = &fixed_args;
 
-    let factory = quote_spanned! { ast.span() =>
-        #vis struct #factory_ident#generics {
-            #(#provider_fields)*
+    let provider = quote_spanned! { ast.span() =>
+        #vis struct #provider_ident #generics {
+            /// Whether or not the injector has been initialized.
+            __injector_init: bool,
+            #(#provider_fields,)*
         }
 
-        impl#generics #factory_ident#generics {
-            pub async fn run(mut self, __injector: ::async_injector::Injector) -> Result<(), ::async_injector::Error> {
-                #(#injected_fields_init)*
+        impl #generics #provider_ident #generics {
+            /// Construct a new provider.
+            #vis async fn new(__injector: &::async_injector::Injector #(, #args)*) -> Result<#provider_ident #generics, ::async_injector::Error> {
+                #(#constructor_assign)*
 
-                let mut __injector_init = true;
+                Ok(#provider_ident {
+                    __injector_init: false,
+                    #(#constructor_fields,)*
+                })
+            }
 
+            /// Update the provided value.
+            #vis async fn update(&mut self) -> Option<#ident #generics> {
                 loop {
-                    if !::std::mem::take(&mut __injector_init) {
+                    if !::std::mem::take(&mut self.__injector_init) {
                         ::async_injector::derive::select! {
                             #(#injected_update)*
                         }
                     }
 
                     #(#provider_extract)*
-                    #(#provider_clone)*
 
-                    #provider_construct
+                    return Some(#ident {
+                        #(#initialized_fields)*
+                    });
                 }
             }
         }
     };
 
-    (factory, factory_ident)
+    (provider, provider_ident, fixed_args, fixed_idents)
 }
 
 /// Extract the optional type argument from the given type.
@@ -581,28 +406,8 @@ fn optional_ty(ty: &Type) -> &Type {
     }
 }
 
-/// Constructs an immediate run implementation if there are no fixed dependencies.
-fn impl_immediate_run<'a>(config: &ProviderConfig<'a>) -> Option<TokenStream> {
-    for f in &config.fields {
-        if f.dependency.is_none() {
-            return None;
-        }
-    }
-
-    let run = quote! {
-        pub async fn run(__injector: ::async_injector::Injector) -> Result<(), ::async_injector::Error> {
-            let mut provider = Self::builder().build()?;
-            provider.run(__injector).await
-        }
-    };
-
-    Some(run)
-}
-
 struct ProviderConfig<'a> {
     fields: Vec<ProviderField<'a>>,
-    provider: ProviderAttr,
-    generics: &'a Generics,
 }
 
 struct ProviderField<'a> {
@@ -627,18 +432,6 @@ struct Dependency<'a> {
 struct DependencyAttr {
     /// Use a string tag.
     tag: Option<String>,
+    /// If the field is optional.
     optional: bool,
-}
-
-/// #[provider(...)] attribute
-#[derive(Debug, Default, FromMeta)]
-struct ProviderAttr {
-    /// Output type of the provider.
-    output: String,
-    /// Builder function for a provider.
-    #[darling(default)]
-    build: Option<String>,
-    /// Clear function for a provider.
-    #[darling(default)]
-    clear: Option<String>,
 }

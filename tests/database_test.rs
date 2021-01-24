@@ -9,15 +9,6 @@ struct Database {
     connection_limit: u32,
 }
 
-impl Database {
-    async fn build(provider: DatabaseProvider2) -> Option<Self> {
-        Some(Self {
-            url: provider.url,
-            connection_limit: provider.connection_limit,
-        })
-    }
-}
-
 /// Provider that describes how to construct a database.
 #[derive(Serialize)]
 pub enum Tag {
@@ -26,8 +17,7 @@ pub enum Tag {
 }
 
 #[derive(Provider)]
-#[provider(output = "Database", build = "Database::build")]
-struct DatabaseProvider2 {
+struct DatabaseParams {
     #[dependency(tag = "Tag::DatabaseUrl")]
     url: String,
     #[dependency(tag = "Tag::ConnectionLimit")]
@@ -40,7 +30,26 @@ async fn test_provider() -> Result<(), Box<dyn std::error::Error>> {
     let conn_limit_key = Key::<u32>::tagged(Tag::ConnectionLimit)?;
 
     let injector = async_injector::Injector::new();
-    tokio::spawn(DatabaseProvider2::run(injector.clone()));
+    let mut database_params = DatabaseParams::provider(&injector).await?;
+    let database_injector = injector.clone();
+
+    tokio::spawn(async move {
+        loop {
+            match database_params.update().await {
+                Some(update) => {
+                    database_injector
+                        .update(Database {
+                            url: update.url,
+                            connection_limit: update.connection_limit,
+                        })
+                        .await;
+                }
+                None => {
+                    database_injector.clear::<Database>().await;
+                }
+            }
+        }
+    });
 
     let (mut database_stream, database) = injector.stream::<Database>().await;
 
