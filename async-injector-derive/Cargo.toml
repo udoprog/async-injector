@@ -1,6 +1,6 @@
 [package]
 name = "async-injector-derive"
-version = "0.14.1"
+version = "0.15.0"
 authors = ["John-John Tedro <udoprog@tedro.se>"]
 edition = "2018"
 license = "MIT/Apache-2.0"
@@ -19,7 +19,7 @@ quote = "1.0.3"
 syn = { version = "1.0.18", features = ["full", "visit-mut"] }
 
 [dev-dependencies]
-async-injector = { version = "0.14.1", path = ".." }
+async-injector = { version = "0.15.0", path = ".." }
 
 serde = { version = "1.0.106", features = ["derive"] }
 tokio = { version = "1.0.0", features = ["rt", "rt-multi-thread", "sync", "macros"] }
