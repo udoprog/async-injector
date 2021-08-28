@@ -25,7 +25,7 @@
 //! > cargo run --example fake_database
 //! > ```
 //!
-//! ```rust,no_run
+//! ```rust
 //! use tokio::time;
 //!
 //! #[derive(Clone)]

@@ -29,7 +29,6 @@ update.
 
 ```rust
 use tokio::time;
-use tokio_stream::StreamExt as _;
 
 #[derive(Clone)]
 struct Database;
@@ -50,16 +49,9 @@ async fn main() {
     });
 
     assert!(database.is_none());
-
     // Every update to the stored type will be streamed, allowing you to
     // react to it.
-    if let Some(update) = database_stream.next().await {
-        println!("Updating database!");
-        database = update;
-    } else {
-        panic!("No database update received :(");
-    }
-
+    database = database_stream.recv().await;
     assert!(database.is_some());
 }
 ```
@@ -86,7 +78,6 @@ use async_injector::Key;
 use serde::Serialize;
 use std::{error::Error, time::Duration};
 use tokio::time;
-use tokio_stream::StreamExt as _;
 
 #[derive(Serialize)]
 enum Tag {
@@ -136,11 +127,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     loop {
         tokio::select! {
-            Some(update) = one_stream.next() => {
+            update = one_stream.recv() => {
                 one = update;
                 println!("one: {:?}", one);
             }
-            Some(update) = two_stream.next() => {
+            update = two_stream.recv() => {
                 two = update;
                 println!("two: {:?}", two);
             }
@@ -167,7 +158,6 @@ use async_injector::{Key, Provider, Injector};
 use serde::Serialize;
 use std::error::Error;
 use std::time::Duration;
-use tokio_stream::StreamExt as _;
 
 /// Fake database connection.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -1,6 +1,6 @@
 [package]
 name = "async-injector-derive"
-version = "0.17.0"
+version = "0.17.1"
 authors = ["John-John Tedro <udoprog@tedro.se>"]
 edition = "2018"
 license = "MIT/Apache-2.0"
@@ -13,17 +13,17 @@ A derive to help construct dependent values in async-injector.
 """
 
 [dependencies]
-darling = "0.12.0"
-proc-macro2 = "1.0.24"
-quote = "1.0.8"
-syn = { version = "1.0.59", features = ["full", "visit-mut"] }
+darling = "0.13.0"
+proc-macro2 = "1.0.28"
+quote = "1.0.9"
+syn = { version = "1.0.75", features = ["full", "visit-mut"] }
 
 [dev-dependencies]
-async-injector = { version = "0.17.0", path = ".." }
+async-injector = { version = "0.17.1", path = ".." }
 
-serde = { version = "1.0.121", features = ["derive"] }
-tokio = { version = "1.1.0", features = ["rt", "rt-multi-thread", "sync", "macros"] }
-tokio-stream = "0.1.2"
+serde = { version = "1.0.130", features = ["derive"] }
+tokio = { version = "1.10.1", features = ["rt", "rt-multi-thread", "sync", "macros"] }
+tokio-stream = "0.1.7"
 
 [lib]
 proc-macro = true

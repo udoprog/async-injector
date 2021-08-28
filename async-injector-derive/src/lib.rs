@@ -168,10 +168,7 @@ use syn::*;
 ///
 /// assert!(injector.update_key(&conn_limit_key, 5).await.is_none());
 ///
-/// let new_database = database_stream
-///     .next()
-///     .await
-///     .expect("unexpected end of stream");
+/// let new_database = database_stream.recv().await;
 ///
 /// // Database instance is available!
 /// assert_eq!(
