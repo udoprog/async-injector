@@ -14,6 +14,15 @@ and not for other typical scenarios such as when it's being restarted.
 Values are provided as [Stream]s of updates that can be subscribed to as
 necessary throughout your application.
 
+## Usage
+
+Add `async-injector` to your `Cargo.toml`.
+
+```toml
+[dependencies]
+async-injector = "0.18.0"
+```
+
 ## Examples
 
 In the following we'll showcase the injection of a *fake* `Database`. The
