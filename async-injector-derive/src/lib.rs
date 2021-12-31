@@ -224,14 +224,13 @@ fn implement(ast: &DeriveInput) -> syn::Result<TokenStream> {
 }
 
 /// Build a provider configuration.
-fn provider_config<'a>(st: &'a DataStruct) -> syn::Result<ProviderConfig<'a>> {
+fn provider_config(st: &DataStruct) -> syn::Result<ProviderConfig<'_>> {
     let fields = provider_fields(st)?;
-
     Ok(ProviderConfig { fields })
 }
 
 /// Extracts provider fields.
-fn provider_fields<'a>(st: &'a DataStruct) -> syn::Result<Vec<ProviderField<'a>>> {
+fn provider_fields(st: &DataStruct) -> syn::Result<Vec<ProviderField<'_>>> {
     let mut fields = Vec::new();
 
     for field in &st.fields {
@@ -270,12 +269,9 @@ fn provider_fields<'a>(st: &'a DataStruct) -> syn::Result<Vec<ProviderField<'a>>
         let dependency = match dependency {
             Some((span, dep)) => Some(Dependency {
                 span,
-                tag: match dep.tag {
-                    Some(tag) => Some(
-                        syn::parse_str::<TokenStream>(&tag).expect("`tag` to be valid expression"),
-                    ),
-                    None => None,
-                },
+                tag: dep.tag.map(|t| {
+                    syn::parse_str::<TokenStream>(&t).expect("`tag` to be valid expression")
+                }),
                 optional: dep.optional,
                 ty: if dep.optional {
                     optional_ty(&field.ty)
@@ -287,8 +283,8 @@ fn provider_fields<'a>(st: &'a DataStruct) -> syn::Result<Vec<ProviderField<'a>>
         };
 
         fields.push(ProviderField {
-            ident: &ident,
-            field: &field,
+            ident,
+            field,
             dependency,
         })
     }
@@ -470,7 +466,7 @@ fn optional_ty(ty: &Type) -> &Type {
             let first = arguments.iter().next().expect("at least one argument");
 
             match first {
-                GenericArgument::Type(ref ty) => return ty,
+                GenericArgument::Type(ref ty) => ty,
                 _ => panic!("expected type generic argument"),
             }
         }

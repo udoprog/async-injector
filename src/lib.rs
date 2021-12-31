@@ -542,11 +542,7 @@ impl Injector {
     /// }
     /// ```
     pub fn new() -> Self {
-        Self {
-            inner: Arc::new(Inner {
-                storage: Default::default(),
-            }),
-        }
+        Self::default()
     }
 
     /// Get a value from the injector.
@@ -677,7 +673,7 @@ impl Injector {
         T: Clone + Any + Send + Sync,
     {
         let key = key.as_ref().as_raw_key();
-        let value = Value::new(T::from(value));
+        let value = Value::new(value);
 
         let mut storage = self.inner.storage.write().await;
         let storage = storage.entry(key.clone()).or_default();
@@ -880,13 +876,10 @@ impl Injector {
 
         let value = storage.value.read().await;
 
-        if let Some(value) = &*value {
-            // Safety: The expected type parameter is encoded and
-            // maintained in the Stream type.
-            Some(unsafe { value.downcast_ref::<T>().clone() })
-        } else {
-            None
-        }
+        value.as_ref().map(|value| {
+            // Safety: Ref<T> instances can only be produced by checked fns.
+            unsafe { value.downcast_ref::<T>().clone() }
+        })
     }
 
     /// Get an existing value and setup a stream for updates at the same time.
@@ -979,14 +972,11 @@ impl Injector {
 
         let value = storage.value.read().await;
 
-        let value = match &*value {
-            Some(value) => {
-                // Safety: The expected type parameter is encoded and
-                // maintained in the Stream type.
-                Some(unsafe { value.downcast_ref::<T>().clone() })
-            }
-            None => None,
-        };
+        let value = value.as_ref().map(|value| {
+            // Safety: The expected type parameter is encoded and maintained
+            // in the Stream type.
+            unsafe { value.downcast_ref::<T>().clone() }
+        });
 
         let stream = Stream {
             rx,
@@ -1061,6 +1051,16 @@ impl Injector {
         Ref {
             value: storage.value.clone(),
             _m: marker::PhantomData,
+        }
+    }
+}
+
+impl Default for Injector {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                storage: Default::default(),
+            }),
         }
     }
 }
@@ -1269,11 +1269,11 @@ where
         let value = self.value.read().await;
 
         let result = RefReadGuard::try_map(value, |value| {
-            match value {
-                // Safety: Ref<T> instances can only be produced by checked fns.
-                Some(value) => Some(unsafe { value.downcast_ref::<T>() }),
-                None => None,
-            }
+            value.as_ref().map(|value| {
+                // Safety: The expected type parameter is encoded and
+                // maintained in the Stream type.
+                unsafe { value.downcast_ref::<T>() }
+            })
         });
 
         result.ok()
@@ -1305,11 +1305,11 @@ where
     pub async fn load(&self) -> Option<T> {
         let value = self.value.read().await;
 
-        match &*value {
-            // Safety: Ref<T> instances can only be produced by checked fns.
-            Some(value) => Some(unsafe { value.downcast_ref::<T>().clone() }),
-            None => None,
-        }
+        value.as_ref().map(|value| {
+            // Safety: The expected type parameter is encoded and maintained
+            // in the Stream type.
+            unsafe { value.downcast_ref::<T>().clone() }
+        })
     }
 }
 
