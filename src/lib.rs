@@ -12,16 +12,16 @@
 //! Values are provided as [Stream]s of updates that can be subscribed to as
 //! necessary throughout your application.
 //!
+//! <br>
+//!
 //! # Usage
 //!
 //! Add `async-injector` to your `Cargo.toml`.
 //!
 //! ```toml
 //! [dependencies]
-//! async-injector = "0.18.0"
+//! async-injector = "0.18.1"
 //! ```
-//!
-//! # Examples
 //!
 //! In the following we'll showcase the injection of a *fake* `Database`. The
 //! idea here would be that if something about the database connection changes,
@@ -64,6 +64,8 @@
 //!
 //! With a bit of glue, this means that your application can be reconfigured
 //! without restarting it. Providing a richer user experience.
+//!
+//! <br>
 //!
 //! ## Injecting multiple things of the same type
 //!
@@ -147,7 +149,9 @@
 //! }
 //! ```
 //!
-//! # The `Provider` derive
+//! <br>
+//!
+//! ## The `Provider` derive
 //!
 //! The following showcases how the [Provider] derive can be used to
 //! conveniently wait for groups of dependencies to be supplied.
@@ -292,7 +296,7 @@
 //! [cannot be hashed]: https://internals.rust-lang.org/t/f32-f64-should-implement-hash/5436
 //! [Injector]: https://docs.rs/async-injector/0/async_injector/struct.Injector.html
 //! [Key]: https://docs.rs/async-injector/0/async_injector/struct.Key.html
-//! [Provider]: https://docs.rs/async-injector-derive/0/async_injector_derive/derive.Provider.html
+//! [Provider]: https://docs.rs/async-injector/0/async_injector/derive.Provider.html
 //! [serde]: https://serde.rs
 //! [Stream]: https://docs.rs/futures-core/0/futures_core/stream/trait.Stream.html
 //! [String]: https://doc.rust-lang.org/std/string/struct.String.html
@@ -321,11 +325,8 @@ pub mod derive {
     pub use tokio::select;
 }
 
-#[macro_use]
-#[allow(unused_imports)]
-extern crate async_injector_derive;
-#[doc(hidden)]
-pub use self::async_injector_derive::*;
+#[doc(inline)]
+pub use async_injector_derive::Provider;
 
 /// Errors that can be raised by various functions in the [Injector].
 #[derive(Debug)]
@@ -503,10 +504,7 @@ struct Inner {
 /// An injector of dependencies.
 ///
 /// Injectors are defined in hierarchies where an injector is either the root
-/// injector as created using [setup] or [setup_with_driver], or the child of
-/// another injector through [Injector::child].
-///
-/// Child injectors receive all the updates of their ancestors.
+/// injector as created using [Injector::new].
 #[derive(Clone)]
 pub struct Injector {
     inner: Arc<Inner>,

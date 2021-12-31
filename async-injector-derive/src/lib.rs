@@ -1,4 +1,4 @@
-//! Macros for [`async-injector`](https://docs.rs/async-injector).
+//! Macros for [async-injector](https://docs.rs/async-injector).
 //!
 //! This provides the [Provider] derive, which can be used to automatically
 //! construct and inject dependencies. See its documentation for how to use.
@@ -40,8 +40,7 @@ use syn::*;
 /// }
 /// ```
 ///
-/// This generates another struct call `<ident>Provider`, with the following
-/// functions:
+/// This generates another struct named `DepsProvider`, with the following api:
 ///
 /// ```rust,no_run
 /// use async_injector::{Error, Injector};
@@ -63,124 +62,61 @@ use syn::*;
 ///     fn build(&mut self) -> Option<Deps>
 ///     # { todo!() }
 ///
-///     /// Wait for a dependency to be updated.
-///     ///
-///     /// Once a dependency has been updated, the next call to [setup]
-///     /// will eagerly try to build the dependency instead of waiting for
-///     /// another update.
+///     /// Wait until we can successfully build the complete provided
+///     /// value.
 ///     async fn wait(&mut self) -> Deps
 ///     # { todo!() }
 ///
-///     /// Update and try to build the provided value.
-///     ///
-///     /// This is like combining [wait] and [build] in a manner that
-///     /// allows the value to be built without waiting for it the first
-///     /// time.
-///     ///
-///     /// The first call to [update] will return immediately, and subsequent
-///     /// calls will block for updates.
+///     /// Wait until the provided value has changed. Either some
+///     /// dependencies are no longer available at which it returns `None`,
+///     /// or all dependencies are available after which we return the
+///     /// build value.
 ///     async fn wait_for_update(&mut self) -> Option<Deps>
 ///     # { todo!() }
 /// }
 /// ```
 ///
-/// # Field attributes
+/// The `provider` associated function takes the reference to an injector as its
+/// first argument and any fields which are not marked as a `#[dependency]`.
+/// These are called fixed fields.
+///
+/// <br>
+///
+/// # The `#[dependency]` field attribute
 ///
 /// The `#[dependency]` attribute can be used to mark fields which need to be
 /// injected. It takes an optional `#[dependency(tag = "..")]`, which allows you
 /// to specify the tag to use when constructing the injected [Key].
 ///
-/// ```rust,no_run
+/// ```rust
 /// use async_injector::Provider;
+/// use serde::Serialize;
+///
+/// #[derive(Serialize)]
+/// enum Tag {
+///     First,
+/// }
 ///
 /// #[derive(Provider)]
-/// struct DatabaseParams {
-///     #[dependency(tag = "\"url\"")]
-///     url: String,
+/// struct Params {
+///     #[dependency(tag = "Tag::First")]
+///     tagged: String,
 ///     #[dependency]
-///     connection_limit: u32,
+///     number: u32,
 /// }
 /// ```
 ///
-/// # Examples
+/// Optional fields use the [Option] type and must be marked with the `optional`
+/// meta attribute.
 ///
-/// ```rust,no_run
-/// use async_injector::{Injector, Key, Provider};
-/// use serde::Serialize;
-/// use tokio_stream::StreamExt as _;
-///
-/// /// Fake database connection.
-/// #[derive(Clone, Debug, PartialEq, Eq)]
-/// struct Database {
-///     url: String,
-///     connection_limit: u32,
-/// }
-///
-/// /// Provider that describes how to construct a database.
-/// #[derive(Serialize)]
-/// pub enum Tag {
-///     DatabaseUrl,
-///     ConnectionLimit,
-/// }
+/// ```rust
+/// use async_injector::Provider;
 ///
 /// #[derive(Provider)]
-/// struct DatabaseParams {
-///     #[dependency(tag = "Tag::DatabaseUrl")]
-///     url: String,
-///     #[dependency(tag = "Tag::ConnectionLimit")]
-///     connection_limit: u32,
+/// struct Params {
+///     #[dependency(optional)]
+///     table: Option<String>,
 /// }
-///
-/// # #[tokio::main] async fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let db_url_key = Key::<String>::tagged(Tag::DatabaseUrl)?;
-/// let conn_limit_key = Key::<u32>::tagged(Tag::ConnectionLimit)?;
-///
-/// let injector = Injector::new();
-///
-/// let database_injector = injector.clone();
-/// let mut database = DatabaseParams::provider(&injector).await?;
-///
-/// tokio::spawn(async move {
-///     loop {
-///         match database.update().await {
-///             Some(update) => {
-///                 database_injector.update(Database {
-///                     url: update.url,
-///                     connection_limit: update.connection_limit,
-///                 }).await;
-///             }
-///             None => {
-///                 database_injector.clear::<Database>().await;
-///             }
-///         }
-///     }
-/// });
-///
-/// let (mut database_stream, database) = injector.stream::<Database>().await;
-///
-/// // None of the dependencies are available, so it hasn't been constructed.
-/// assert!(database.is_none());
-///
-/// assert!(injector
-///     .update_key(&db_url_key, String::from("example.com"))
-///     .await
-///     .is_none());
-///
-/// assert!(injector.update_key(&conn_limit_key, 5).await.is_none());
-///
-/// let new_database = database_stream.recv().await;
-///
-/// // Database instance is available!
-/// assert_eq!(
-///     new_database,
-///     Some(Database {
-///         url: String::from("example.com"),
-///         connection_limit: 5
-///     })
-/// );
-///
-/// Ok(())
-/// # }
 /// ```
 ///
 /// [Key]: https://docs.rs/async-injector/0/async_injector/struct.Key.html
