@@ -68,7 +68,7 @@ use syn::*;
 ///     /// Once a dependency has been updated, the next call to [setup]
 ///     /// will eagerly try to build the dependency instead of waiting for
 ///     /// another update.
-///     async fn wait(&mut self)
+///     async fn wait(&mut self) -> Deps
 ///     # { todo!() }
 ///
 ///     /// Update and try to build the provided value.
@@ -79,7 +79,7 @@ use syn::*;
 ///     ///
 ///     /// The first call to [update] will return immediately, and subsequent
 ///     /// calls will block for updates.
-///     async fn update(&mut self) -> Option<Deps>
+///     async fn wait_for_update(&mut self) -> Option<Deps>
 ///     # { todo!() }
 /// }
 /// ```
@@ -277,7 +277,6 @@ fn provider_fields<'a>(st: &'a DataStruct) -> syn::Result<Vec<ProviderField<'a>>
                     None => None,
                 },
                 optional: dep.optional,
-                key_field: Ident::new(&format!("__key__{}", ident), Span::call_site()),
                 ty: if dep.optional {
                     optional_ty(&field.ty)
                 } else {
@@ -400,7 +399,7 @@ fn impl_provider<'a>(
                 #(#constructor_assign)*
 
                 Ok(#provider_ident {
-                    __init: false,
+                    __init: true,
                     #(#constructor_fields,)*
                 })
             }
@@ -416,31 +415,33 @@ fn impl_provider<'a>(
                 })
             }
 
-            /// Update and try to build the provided value.
-            ///
-            /// This is like combining [wait] and [build] in a manner that
-            /// allows the value to be built without waiting for it the first
-            /// time.
+            /// Wait until the provided value has changed. Either some
+            /// dependencies are no longer available at which it returns `None`,
+            /// or all dependencies are available after which we return the
+            /// build value.
             #[allow(dead_code)]
-            #vis async fn update(&mut self) -> Option<#ident #generics> {
-                if !::std::mem::take(&mut self.__init) {
-                    self.wait_for_update().await;
+            #vis async fn wait_for_update(&mut self) -> Option<#ident #generics> {
+                if self.__init {
+                    self.__init = false;
+                } else {
+                    self.wait_internal().await;
                 }
 
                 self.build()
             }
 
-            /// Wait for a dependency to be updated.
-            ///
-            /// Once a dependency has been updated, the next call to [setup]
-            /// will check all dependencies automatically.
+            /// Wait until we can successfully build the complete provided
+            /// value.
             #[allow(dead_code)]
-            #vis async fn wait(&mut self) {
-                self.wait_for_update().await;
-                self.__init = true;
+            #vis async fn wait(&mut self) -> #ident #generics {
+                loop {
+                    if let Some(value) = self.wait_for_update().await {
+                        return value;
+                    }
+                }
             }
 
-            async fn wait_for_update(&mut self) {
+            async fn wait_internal(&mut self) {
                 ::async_injector::derive::select! {
                     #(#injected_update)*
                 }
@@ -495,7 +496,6 @@ struct Dependency<'a> {
     /// Use a string tag.
     tag: Option<TokenStream>,
     optional: bool,
-    key_field: Ident,
     ty: &'a Type,
 }
 

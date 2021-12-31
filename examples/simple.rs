@@ -101,7 +101,7 @@ async fn main() -> Result<(), Error> {
     // Just blocking over all futures, not checking errors.
     tokio::select! {
         _ = task => {},
-        update = provider.update() => {
+        update = provider.wait_for_update() => {
             match update {
                 Some(update) => {
                     injector.update(Thing {

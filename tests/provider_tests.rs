@@ -97,7 +97,7 @@ async fn test_something() -> Result<(), Error> {
             _ = &mut test => {
                 break;
             },
-            update = provider.update() => {
+            update = provider.wait_for_update() => {
                 match update {
                     Some(update) => injector.update(Foo(update.fixed.to_string(), update.foo, update.bar)).await,
                     None => injector.clear::<Foo>().await,

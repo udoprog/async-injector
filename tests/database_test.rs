@@ -36,7 +36,7 @@ async fn test_provider() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::spawn(async move {
         loop {
-            match database_params.update().await {
+            match database_params.wait_for_update().await {
                 Some(update) => {
                     database_injector
                         .update(Database {

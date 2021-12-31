@@ -1,5 +1,3 @@
-use tokio::time;
-
 #[derive(Clone)]
 struct Database;
 
@@ -13,7 +11,6 @@ async fn main() {
         let injector = injector.clone();
 
         async move {
-            time::sleep(time::Duration::from_secs(2)).await;
             injector.update(Database).await;
         }
     });

@@ -19,15 +19,12 @@
 //! a new instance of `Database` would be created and cause the application to
 //! update.
 //!
-//! > This is available as the `fake_database` example and you can run it
-//! > yourself using:
+//! > This is available as the `fake_database` example:
 //! > ```sh
 //! > cargo run --example fake_database
 //! > ```
 //!
 //! ```rust
-//! use tokio::time;
-//!
 //! #[derive(Clone)]
 //! struct Database;
 //!
@@ -37,11 +34,10 @@
 //!     let (mut database_stream, mut database) = injector.stream::<Database>().await;
 //!
 //!     // Insert the database dependency in a different task in the background.
-//!     tokio::spawn({
+//!     let _ = tokio::spawn({
 //!         let injector = injector.clone();
 //!
 //!         async move {
-//!             time::sleep(time::Duration::from_secs(2)).await;
 //!             injector.update(Database).await;
 //!         }
 //!     });
@@ -68,8 +64,12 @@
 //! This can be useful when dealing with overly generic types like [String].
 //!
 //! The tag used must be serializable with [serde]. It must also not use any
-//! components which [cannot be hashed], like `f32` and `f64`. This will
-//! otherwise cause an error to be raised as it's being injected.
+//! components which [cannot be hashed], like `f32` and `f64`.
+//!
+//! > This is available as the `ticker` example:
+//! > ```sh
+//! > cargo run --example ticker
+//! > ```
 //!
 //! ```rust,no_run
 //! use async_injector::Key;
@@ -141,21 +141,28 @@
 //! # The `Provider` derive
 //!
 //! The following showcases how the [Provider] derive can be used to
-//! conveniently wait for groups of dependencies to become available.
+//! conveniently wait for groups of dependencies to be supplied.
 //!
-//! Below we're waiting for two database parameters to become updated:
-//! * `url`
-//! * `connection_limit`
+//! Below we're waiting for two database parameters to become updated: `url` and
+//! `connection_limit`.
 //!
-//! Also note how they're being update asynchronously in a background thread to
-//! simulate being updated "somewhere else". This could be an update event
-//! caused by a multitude of things, like a configuration change in a frontend.
+//! Note how the update happens in a background thread to simulate it being
+//! supplied "somewhere else". In the real world this could be caused by a
+//! multitude of things, like a configuration change in a frontend.
 //!
-//! ```rust,no_run
-//! use async_injector::{Key, Provider, Injector};
+//! > This is available as the `provider` example:
+//! > ```sh
+//! > cargo run --example provider
+//! > ```
+//!
+//! ```rust
+//! use async_injector::{Injector, Key, Provider};
 //! use serde::Serialize;
 //! use std::error::Error;
+//! use std::future::pending;
 //! use std::time::Duration;
+//! use tokio::task::yield_now;
+//! use tokio::time::sleep;
 //!
 //! /// Fake database connection.
 //! #[derive(Clone, Debug, PartialEq, Eq)]
@@ -169,6 +176,7 @@
 //! pub enum Tag {
 //!     DatabaseUrl,
 //!     ConnectionLimit,
+//!     Shutdown,
 //! }
 //!
 //! /// A group of database params to wait for until they become available.
@@ -180,59 +188,90 @@
 //!     connection_limit: u32,
 //! }
 //!
-//! async fn update_db_params(injector: Injector, db_url: Key<String>, connection_limit: Key<u32>) {
-//!     tokio::time::sleep(Duration::from_secs(2));
+//! async fn update_db_params(
+//!     injector: Injector,
+//!     db_url: Key<String>,
+//!     connection_limit: Key<u32>,
+//!     shutdown: Key<bool>,
+//! ) {
+//!     injector
+//!         .update_key(&db_url, String::from("example.com"))
+//!         .await;
 //!
-//!     injector.update_key(&db_url, String::from("example.com")).await;
-//!     injector.update_key(&connection_limit, 5).await;
+//!     for limit in 5..10 {
+//!         sleep(Duration::from_millis(100)).await;
+//!         injector.update_key(&connection_limit, limit).await;
+//!     }
+//!
+//!     // Yield to give the update a chance to propagate.
+//!     yield_now().await;
+//!     injector.update_key(&shutdown, true).await;
 //! }
 //!
 //! /// Fake service that runs for two seconds with a configured database.
-//! async fn service(db: Database) {
-//!     tokio::time::sleep(Duration::from_secs(2));
+//! async fn service(database: Database) {
+//!     println!("Starting new service with database: {:?}", database);
+//!     pending::<()>().await;
 //! }
 //!
-//! #[tokio::test]
-//! async fn test_provider() -> Result<(), Box<dyn Error>> {
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn Error>> {
 //!     let db_url = Key::<String>::tagged(Tag::DatabaseUrl)?;
 //!     let connection_limit = Key::<u32>::tagged(Tag::ConnectionLimit)?;
+//!     let shutdown = Key::<bool>::tagged(Tag::Shutdown)?;
 //!
 //!     let injector = Injector::new();
 //!
-//!     /// Set up asynchronous task that updates the parameters in the background.
-//!     tokio::spawn(update_db_params(injector.clone(), db_url, connection_limit));
+//!     // Set up asynchronous task that updates the parameters in the background.
+//!     tokio::spawn(update_db_params(
+//!         injector.clone(),
+//!         db_url,
+//!         connection_limit,
+//!         shutdown.clone(),
+//!     ));
 //!
-//!     let provider = DatabaseParams::new(&injector).await?;
+//!     let mut provider = DatabaseParams::provider(&injector).await?;
+//!
+//!     // Wait until database is configured.
+//!     let params = provider.wait().await;
+//!
+//!     let database = Database {
+//!         url: params.url,
+//!         connection_limit: params.connection_limit,
+//!     };
+//!
+//!     assert_eq!(
+//!         database,
+//!         Database {
+//!             url: String::from("example.com"),
+//!             connection_limit: 5
+//!         }
+//!     );
+//!
+//!     let (mut shutdown, is_shutdown) = injector.stream_key(&shutdown).await;
+//!
+//!     if is_shutdown == Some(true) {
+//!         return Ok(());
+//!     }
+//!
+//!     let fut = service(database);
+//!     tokio::pin!(fut);
 //!
 //!     loop {
-//!         /// Wait until database is configured.
-//!         let database = loop {
-//!             if let Some(update) = provider.update().await {
-//!                 break Database {
-//!                     url: update.url,
-//!                     connection_limit: update.connection_limit,
-//!                 };
+//!         tokio::select! {
+//!             _ = &mut fut => {
+//!                 break;
 //!             }
-//!         };
-//!
-//!         assert_eq!(
-//!             new_database,
-//!             Database {
-//!                 url: String::from("example.com"),
-//!                 connection_limit: 5
-//!             }
-//!         );
-//!
-//!         loop {
-//!             tokio::select! {
-//!                 _ = service(database.clone()) => {
+//!             is_shutdown = shutdown.recv() => {
+//!                 if is_shutdown == Some(true) {
 //!                     break;
 //!                 }
-//!                 update = provider.update().await {
-//!                     match update {
-//!                         None => break,
-//!                     }
-//!                 }
+//!             }
+//!             params = provider.wait() => {
+//!                 fut.set(service(Database {
+//!                     url: params.url,
+//!                     connection_limit: params.connection_limit,
+//!                 }));
 //!             }
 //!         }
 //!     }
@@ -247,6 +286,7 @@
 //! [Provider]: https://docs.rs/async-injector-derive/0/async_injector_derive/derive.Provider.html
 //! [serde]: https://serde.rs
 //! [Stream]: https://docs.rs/futures-core/0/futures_core/stream/trait.Stream.html
+//! [String]: https://doc.rust-lang.org/std/string/struct.String.html
 
 #![deny(missing_docs)]
 
@@ -468,7 +508,7 @@ impl Injector {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```
     /// #[tokio::main]
     /// async fn main() {
     ///     let injector = async_injector::Injector::new();
@@ -483,7 +523,7 @@ impl Injector {
     ///
     /// # Example using a [Stream]
     ///
-    /// ```rust
+    /// ```
     /// use std::error::Error;
     ///
     /// #[derive(Clone)]
@@ -519,7 +559,7 @@ impl Injector {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```
     /// #[tokio::main]
     /// async fn main() {
     ///     let injector = async_injector::Injector::new();
@@ -548,7 +588,7 @@ impl Injector {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```
     /// use async_injector::{Key, Injector};
     /// use std::error::Error;
     ///
@@ -589,7 +629,7 @@ impl Injector {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```
     /// #[tokio::main]
     /// async fn main() {
     ///     let injector = async_injector::Injector::new();
@@ -616,7 +656,7 @@ impl Injector {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```
     /// use async_injector::{Key, Injector};
     /// use std::error::Error;
     ///
@@ -650,7 +690,7 @@ impl Injector {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```
     /// #[tokio::main]
     /// async fn main() {
     ///     let injector = async_injector::Injector::new();
@@ -671,7 +711,7 @@ impl Injector {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```
     /// use async_injector::{Key, Injector};
     /// use std::error::Error;
     ///
@@ -705,7 +745,7 @@ impl Injector {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```
     /// #[tokio::main]
     /// async fn main() {
     ///     let injector = async_injector::Injector::new();
@@ -733,7 +773,7 @@ impl Injector {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```
     /// use async_injector::{Key, Injector};
     /// use std::error::Error;
     ///
@@ -783,7 +823,7 @@ impl Injector {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```
     /// #[tokio::main]
     /// async fn main() {
     ///     let injector = async_injector::Injector::new();
@@ -804,7 +844,7 @@ impl Injector {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```
     /// use async_injector::{Injector, Key};
     /// use std::error::Error;
     ///
@@ -853,7 +893,7 @@ impl Injector {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```
     /// use std::error::Error;
     ///
     /// #[derive(Debug, Clone, PartialEq, Eq)]
@@ -893,7 +933,7 @@ impl Injector {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```
     /// use async_injector::{Injector, Key};
     /// use std::error::Error;
     ///
@@ -960,7 +1000,7 @@ impl Injector {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```
     /// use std::error::Error;
     ///
     /// #[derive(Clone)]
@@ -989,7 +1029,7 @@ impl Injector {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```
     /// use async_injector::{Injector, Key};
     /// use std::error::Error;
     ///
@@ -1115,7 +1155,7 @@ where
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```
     /// use async_injector::Key;
     ///
     /// struct Foo;
@@ -1133,7 +1173,7 @@ where
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```
     /// use serde::Serialize;
     /// use async_injector::Key;
     /// use std::error::Error;
@@ -1207,7 +1247,7 @@ where
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```
     /// use std::error::Error;
     ///
     /// #[derive(Clone)]
@@ -1244,7 +1284,7 @@ where
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```
     /// use std::error::Error;
     ///
     /// #[derive(Clone)]
