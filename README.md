@@ -1,8 +1,9 @@
 # async-injector
 
-[![Documentation](https://docs.rs/async-injector/badge.svg)](https://docs.rs/async-injector)
-[![Crates](https://img.shields.io/crates/v/async-injector.svg)](https://crates.io/crates/async-injector)
-[![Actions Status](https://github.com/udoprog/async-injector/workflows/Rust/badge.svg)](https://github.com/udoprog/async-injector/actions)
+[<img alt="github" src="https://img.shields.io/badge/github-udoprog/async-injector?style=for-the-badge&logo=github" height="20">](https://github.com/udoprog/async-injector)
+[<img alt="crates.io" src="https://img.shields.io/crates/v/async-injector.svg?style=for-the-badge&color=fc8d62&logo=rust" height="20">](https://crates.io/crates/async-injector)
+[<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-async-injector?style=for-the-badge&logoColor=white&logo=data:image/svg+xml;base64,PHN2ZyByb2xlPSJpbWciIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgdmlld0JveD0iMCAwIDUxMiA1MTIiPjxwYXRoIGZpbGw9IiNmNWY1ZjUiIGQ9Ik00ODguNiAyNTAuMkwzOTIgMjE0VjEwNS41YzAtMTUtOS4zLTI4LjQtMjMuNC0zMy43bC0xMDAtMzcuNWMtOC4xLTMuMS0xNy4xLTMuMS0yNS4zIDBsLTEwMCAzNy41Yy0xNC4xIDUuMy0yMy40IDE4LjctMjMuNCAzMy43VjIxNGwtOTYuNiAzNi4yQzkuMyAyNTUuNSAwIDI2OC45IDAgMjgzLjlWMzk0YzAgMTMuNiA3LjcgMjYuMSAxOS45IDMyLjJsMTAwIDUwYzEwLjEgNS4xIDIyLjEgNS4xIDMyLjIgMGwxMDMuOS01MiAxMDMuOSA1MmMxMC4xIDUuMSAyMi4xIDUuMSAzMi4yIDBsMTAwLTUwYzEyLjItNi4xIDE5LjktMTguNiAxOS45LTMyLjJWMjgzLjljMC0xNS05LjMtMjguNC0yMy40LTMzLjd6TTM1OCAyMTQuOGwtODUgMzEuOXYtNjguMmw4NS0zN3Y3My4zek0xNTQgMTA0LjFsMTAyLTM4LjIgMTAyIDM4LjJ2LjZsLTEwMiA0MS40LTEwMi00MS40di0uNnptODQgMjkxLjFsLTg1IDQyLjV2LTc5LjFsODUtMzguOHY3NS40em0wLTExMmwtMTAyIDQxLjQtMTAyLTQxLjR2LS42bDEwMi0zOC4yIDEwMiAzOC4ydi42em0yNDAgMTEybC04NSA0Mi41di03OS4xbDg1LTM4Ljh2NzUuNHptMC0xMTJsLTEwMiA0MS40LTEwMi00MS40di0uNmwxMDItMzguMiAxMDIgMzguMnYuNnoiPjwvcGF0aD48L3N2Zz4K" height="20">](https://docs.rs/async-injector)
+[<img alt="build status" src="https://img.shields.io/github/workflow/status/udoprog/async-injector/CI/main?style=for-the-badge" height="20">](https://github.com/udoprog/async-injector/actions?query=branch%3Amain)
 
 Asynchronous dependency injection for Rust.
 
@@ -14,6 +15,8 @@ and not for other typical scenarios such as when it's being restarted.
 Values are provided as [Stream]s of updates that can be subscribed to as
 necessary throughout your application.
 
+<br>
+
 ## Usage
 
 Add `async-injector` to your `Cargo.toml`.
@@ -22,8 +25,6 @@ Add `async-injector` to your `Cargo.toml`.
 [dependencies]
 async-injector = "0.18.1"
 ```
-
-## Examples
 
 In the following we'll showcase the injection of a *fake* `Database`. The
 idea here would be that if something about the database connection changes,
@@ -66,6 +67,8 @@ integrate cleanly into asynchronous contexts.
 
 With a bit of glue, this means that your application can be reconfigured
 without restarting it. Providing a richer user experience.
+
+<br>
 
 ### Injecting multiple things of the same type
 
@@ -149,7 +152,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 ```
 
-## The `Provider` derive
+<br>
+
+### The `Provider` derive
 
 The following showcases how the [Provider] derive can be used to
 conveniently wait for groups of dependencies to be supplied.
@@ -294,7 +299,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 [cannot be hashed]: https://internals.rust-lang.org/t/f32-f64-should-implement-hash/5436
 [Injector]: https://docs.rs/async-injector/0/async_injector/struct.Injector.html
 [Key]: https://docs.rs/async-injector/0/async_injector/struct.Key.html
-[Provider]: https://docs.rs/async-injector-derive/0/async_injector_derive/derive.Provider.html
+[Provider]: https://docs.rs/async-injector/0/async_injector/derive.Provider.html
 [serde]: https://serde.rs
 [Stream]: https://docs.rs/futures-core/0/futures_core/stream/trait.Stream.html
 [String]: https://doc.rust-lang.org/std/string/struct.String.html
+
+License: MIT/Apache-2.0
