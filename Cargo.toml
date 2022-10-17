@@ -3,14 +3,14 @@ name = "async-injector"
 version = "0.18.2"
 authors = ["John-John Tedro <udoprog@tedro.se>"]
 edition = "2018"
-license = "MIT/Apache-2.0"
-readme = "README.md"
-repository = "https://github.com/udoprog/async-injector"
-homepage = "https://github.com/udoprog/async-injector"
+description = "Reactive dependency injection for Rust."
 documentation = "https://docs.rs/async-injector"
-description = """
-Reactive dependency injection for Rust.
-"""
+readme = "README.md"
+homepage = "https://github.com/udoprog/async-injector"
+repository = "https://github.com/udoprog/async-injector"
+license = "MIT/Apache-2.0"
+keywords = ["async", "di"]
+categories = ["asynchronous"]
 
 [dependencies]
 async-injector-derive = { version = "0.18.2", path = "./async-injector-derive" }
