@@ -7,6 +7,8 @@
 //!
 //! This provides the [Provider] derive, which can be used to automatically
 //! construct and inject dependencies. See its documentation for how to use.
+//!
+//! [Provider]: https://docs.rs/async-injector/latest/async_injector/derive.Provider.html
 
 #![recursion_limit = "256"]
 

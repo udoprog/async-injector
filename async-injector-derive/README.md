@@ -9,3 +9,5 @@ Macros for [async-injector](https://docs.rs/async-injector).
 
 This provides the [Provider] derive, which can be used to automatically
 construct and inject dependencies. See its documentation for how to use.
+
+[Provider]: https://docs.rs/async-injector/latest/async_injector/derive.Provider.html
