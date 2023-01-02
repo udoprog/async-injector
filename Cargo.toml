@@ -1,6 +1,6 @@
 [package]
 name = "async-injector"
-version = "0.18.2"
+version = "0.18.3"
 authors = ["John-John Tedro <udoprog@tedro.se>"]
 edition = "2018"
 description = "Reactive dependency injection for Rust."
@@ -13,7 +13,7 @@ keywords = ["async", "di"]
 categories = ["asynchronous"]
 
 [dependencies]
-async-injector-derive = { version = "0.18.2", path = "./async-injector-derive" }
+async-injector-derive = { version = "0.18.3", path = "./async-injector-derive" }
 
 hashbrown = "0.11.2"
 serde = { version = "1.0.130", features = ["derive"] }
