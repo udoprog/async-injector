@@ -242,9 +242,9 @@ fn provider_fields(st: &DataStruct) -> syn::Result<Vec<ProviderField<'_>>> {
 ///
 /// This step is necessary to support "fixed" fields, i.e. fields who's value
 /// are provided at build time.
-fn impl_provider<'a>(
+fn impl_provider(
     ast: &DeriveInput,
-    config: &ProviderConfig<'a>,
+    config: &ProviderConfig<'_>,
 ) -> (TokenStream, Ident, Vec<TokenStream>, Vec<Ident>) {
     let provider_ident = Ident::new(&format!("{}Provider", ast.ident), Span::call_site());
 
@@ -332,6 +332,8 @@ fn impl_provider<'a>(
             #(#provider_fields,)*
         }
 
+        #[automatically_derived]
+        #[allow(clippy::clone_double_ref)]
         impl #generics #provider_ident #generics {
             /// Construct a new provider.
             #vis async fn new(__injector: &::async_injector::Injector #(, #args)*) -> Result<#provider_ident #generics, ::async_injector::Error> {

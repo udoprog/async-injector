@@ -61,30 +61,30 @@ async fn test_something() -> Result<(), Error> {
     let finished = Cell::new(false);
 
     let test = async {
-        let (mut foo_stream, foo) = injector.stream::<Foo>().await;
-        assert!(foo.is_none());
+        let (mut value_stream, value) = injector.stream::<Value>().await;
+        assert!(value.is_none());
 
         // Updating foo and bar should construct Foo.
         injector.update::<String>(String::from("hello")).await;
         injector.update_key(&bar_key, String::from("world")).await;
 
-        let foo_update = foo_stream.recv().await;
-        let foo = foo_update.expect("value for Foo");
+        let value_update = value_stream.recv().await;
+        let value = value_update.expect("value for Foo");
 
         assert_eq!(
-            Foo(
+            Value(
                 String::from("fixed"),
                 String::from("hello"),
                 String::from("world")
             ),
-            foo
+            value
         );
 
         // Clearing bar should unset the value for `Foo`.
         injector.clear_key(&bar_key).await;
 
-        let foo_update = foo_stream.recv().await;
-        assert!(foo_update.is_none());
+        let value_update = value_stream.recv().await;
+        assert!(value_update.is_none());
 
         finished.set(true);
     };
@@ -99,8 +99,8 @@ async fn test_something() -> Result<(), Error> {
             },
             update = provider.wait_for_update() => {
                 match update {
-                    Some(update) => injector.update(Foo(update.fixed.to_string(), update.foo, update.bar)).await,
-                    None => injector.clear::<Foo>().await,
+                    Some(update) => injector.update(Value(update.fixed.to_string(), update.foo, update.bar)).await,
+                    None => injector.clear::<Value>().await,
                 }
             }
         };
@@ -121,5 +121,5 @@ async fn test_something() -> Result<(), Error> {
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
-    struct Foo(String, String, String);
+    struct Value(String, String, String);
 }

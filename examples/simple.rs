@@ -116,8 +116,8 @@ async fn main() -> Result<(), Error> {
         },
     }
 
-    let _ = t.await.expect("thread didn't exit gracefully");
-    let _ = t2.await.expect("thread didn't exit gracefully");
+    t.await.expect("thread didn't exit gracefully");
+    t2.await.expect("thread didn't exit gracefully");
 
     Ok(())
 }
