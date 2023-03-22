@@ -23,7 +23,7 @@ Add `async-injector` to your `Cargo.toml`.
 
 ```toml
 [dependencies]
-async-injector = "0.18.3"
+async-injector = "0.18.4"
 ```
 
 In the following we'll showcase the injection of a *fake* `Database`. The
