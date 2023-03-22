@@ -3,6 +3,7 @@ name = "async-injector-derive"
 version = "0.18.3"
 authors = ["John-John Tedro <udoprog@tedro.se>"]
 edition = "2018"
+rust-version = "1.56"
 description = """
 A derive to help construct dependent values in async-injector.
 """
