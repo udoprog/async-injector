@@ -20,7 +20,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! async-injector = "0.18.4"
+//! async-injector = "0.18.5"
 //! ```
 //!
 //! In the following we'll showcase the injection of a *fake* `Database`. The
