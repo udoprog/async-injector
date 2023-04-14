@@ -1,6 +1,6 @@
 [package]
 name = "async-injector-derive"
-version = "0.18.5"
+version = "0.19.0"
 authors = ["John-John Tedro <udoprog@tedro.se>"]
 edition = "2018"
 rust-version = "1.65"
@@ -21,7 +21,7 @@ quote = "1.0.26"
 syn = { version = "2.0.15", features = ["full", "visit-mut"] }
 
 [dev-dependencies]
-async-injector = { version = "=0.18.5", path = ".." }
+async-injector = { version = "=0.19.0", path = ".." }
 
 serde = { version = "1.0.160", features = ["derive"] }
 tokio = { version = "1.27.0", features = ["rt", "rt-multi-thread", "sync", "macros"] }
