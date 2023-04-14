@@ -7,13 +7,11 @@
 
 Asynchronous dependency injection for Rust.
 
-This crate provides a dependency injection system that can be used to
-reactively reconfigure you're application while it's running. Reactive in
-this case refers to the application being reconfigured as-the-value changes,
-and not for other typical scenarios such as when it's being restarted.
+This library provides the glue which allows for building robust decoupled
+applications that can be reconfigured dynamically while they are running.
 
-Values are provided as [Stream]s of updates that can be subscribed to as
-necessary throughout your application.
+For a real world example of how this is used, see [`OxidizeBot`] for which
+it was written.
 
 <br>
 
@@ -23,50 +21,56 @@ Add `async-injector` to your `Cargo.toml`.
 
 ```toml
 [dependencies]
-async-injector = "0.18.5"
+async-injector = "0.19.0"
 ```
+
+<br>
+
+## Example
 
 In the following we'll showcase the injection of a *fake* `Database`. The
 idea here would be that if something about the database connection changes,
 a new instance of `Database` would be created and cause the application to
-update.
-
-> This is available as the `fake_database` example:
-> ```sh
-> cargo run --example fake_database
-> ```
+reconfigure itself.
 
 ```rust
-#[derive(Clone)]
+use async_injector::{Key, Injector, Provider};
+
+#[derive(Debug, Clone)]
 struct Database;
 
-#[tokio::main]
-async fn main() {
-    let injector = async_injector::Injector::new();
-    let (mut database_stream, mut database) = injector.stream::<Database>().await;
+#[derive(Debug, Provider)]
+struct Service {
+    #[dependency]
+    database: Database,
+}
 
-    // Insert the database dependency in a different task in the background.
-    let _ = tokio::spawn({
-        let injector = injector.clone();
+async fn service(injector: Injector) -> Result<(), Box<dyn std::error::Error>> {
+    let mut provider = Service::provider(&injector).await?;
 
-        async move {
-            injector.update(Database).await;
-        }
-    });
+    let Service { database } = provider.wait().await;
+    println!("Service got initial database {database:?}!");
 
-    assert!(database.is_none());
-    // Every update to the stored type will be streamed, allowing you to
-    // react to it.
-    database = database_stream.recv().await;
-    assert!(database.is_some());
+    let Service { database } = provider.wait().await;
+    println!("Service got new database {database:?}!");
+
+    Ok(())
 }
 ```
 
-The [Injector] provides a structured broadcast system of updates, that can
-integrate cleanly into asynchronous contexts.
+> **Note:** This is available as the `database` example:
+> ```sh
+> cargo run --example database
+> ```
 
-With a bit of glue, this means that your application can be reconfigured
-without restarting it. Providing a richer user experience.
+The [`Injector`] above provides a structured broadcasting system that allows
+for configuration updates to be cleanly integrated into asynchronous
+contexts. The update itself is triggered by some other component that is
+responsible for constructing the `Database` instance.
+
+Building up the components of your application like this means that it can
+be reconfigured without restarting it. Providing a much richer user
+experience.
 
 <br>
 
@@ -74,232 +78,152 @@ without restarting it. Providing a richer user experience.
 
 In the previous section you might've noticed that the injected value was
 solely discriminated by its type: `Database`. In this example we'll show how
-[Key] can be used to *tag* values of the same type under different names.
-This can be useful when dealing with overly generic types like [String].
+[`Key`] can be used to *tag* values of the same type with different names to
+discriminate them. This can be useful when dealing with overly generic types
+like [`String`].
 
-The tag used must be serializable with [serde]. It must also not use any
+The tag used must be serializable with [`serde`]. It must also not use any
 components which [cannot be hashed], like `f32` and `f64`.
 
-> This is available as the `ticker` example:
-> ```sh
-> cargo run --example ticker
-> ```
+<br>
+
+### A simple greeter
+
+The following example showcases the use of `Key` to injector two different
+values into an asynchronous `greeter`.
 
 ```rust
-use async_injector::Key;
-use serde::Serialize;
-use std::{error::Error, time::Duration};
-use tokio::time;
+use async_injector::{Key, Injector};
 
-#[derive(Serialize)]
-enum Tag {
-    One,
-    Two,
-}
+async fn greeter(injector: Injector) -> Result<(), Box<dyn std::error::Error>> {
+    let name = Key::<String>::tagged("name")?;
+    let fun = Key::<String>::tagged("fun")?;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let injector = async_injector::Injector::new();
-    let one = Key::<u32>::tagged(Tag::One)?;
-    let two = Key::<u32>::tagged(Tag::Two)?;
-
-    tokio::spawn({
-        let injector = injector.clone();
-        let one = one.clone();
-
-        async move {
-            let mut interval = time::interval(Duration::from_secs(1));
-
-            for i in 0u32.. {
-                interval.tick().await;
-                injector.update_key(&one, i).await;
-            }
-        }
-    });
-
-    tokio::spawn({
-        let injector = injector.clone();
-        let two = two.clone();
-
-        async move {
-            let mut interval = time::interval(Duration::from_secs(1));
-
-            for i in 0u32.. {
-                interval.tick().await;
-                injector.update_key(&two, i * 2).await;
-            }
-        }
-    });
-
-    let (mut one_stream, mut one) = injector.stream_key(one).await;
-    let (mut two_stream, mut two) = injector.stream_key(two).await;
-
-    println!("one: {:?}", one);
-    println!("two: {:?}", two);
+    let (mut name_stream, mut name) = injector.stream_key(name).await;
+    let (mut fun_stream, mut fun) = injector.stream_key(fun).await;
 
     loop {
         tokio::select! {
-            update = one_stream.recv() => {
-                one = update;
-                println!("one: {:?}", one);
+            update = name_stream.recv() => {
+                name = update;
             }
-            update = two_stream.recv() => {
-                two = update;
-                println!("two: {:?}", two);
+            update = fun_stream.recv() => {
+                fun = update;
             }
         }
+
+        let (Some(name), Some(fun)) = (&name, &fun) else {
+            continue;
+        };
+
+        println!("Hi {name}! I see you do \"{fun}\" for fun!");
+        return Ok(());
     }
 }
 ```
+
+> **Note:** you can run this using:
+> ```sh
+> cargo run --example greeter
+> ```
+
+The loop above can be implemented more easily using the [`Provider`] derive,
+so let's do that.
+
+```rust
+use async_injector::{Injector, Provider};
+
+#[derive(Provider)]
+struct Dependencies {
+    #[dependency(tag = "name")]
+    name: String,
+    #[dependency(tag = "fun")]
+    fun: String,
+}
+
+async fn greeter(injector: Injector) -> Result<(), Box<dyn std::error::Error>> {
+    let mut provider = Dependencies::provider(&injector).await?;
+    let Dependencies { name, fun } = provider.wait().await;
+    println!("Hi {name}! I see you do \"{fun}\" for fun!");
+    Ok(())
+}
+```
+
+> **Note:** you can run this using:
+> ```sh
+> cargo run --example greeter_provider
+> ```
 
 <br>
 
 ## The `Provider` derive
 
-The following showcases how the [Provider] derive can be used to
-conveniently wait for groups of dependencies to be supplied.
+The [`Provider`] derive can be used to conveniently implement the mechanism
+necessary to wait for a specific set of dependencies to become available.
 
-Below we're waiting for two database parameters to become updated: `url` and
-`connection_limit`.
+It builds a companion structure next to the type being provided called
+`<name>Provider` which in turn implements the following set of methods:
 
-Note how the update happens in a background thread to simulate it being
-supplied "somewhere else". In the real world this could be caused by a
-multitude of things, like a configuration change in a frontend.
+```rust
+use async_injector::{Error, Injector};
 
-> This is available as the `provider` example:
-> ```sh
-> cargo run --example provider
-> ```
+impl Dependencies {
+    /// Construct a new provider.
+    async fn provider(injector: &Injector) -> Result<DependenciesProvider, Error>
+}
+
+struct DependenciesProvider {
+    /* private fields */
+}
+
+impl DependenciesProvider {
+    /// Try to construct the current value. Returns [None] unless all
+    /// required dependencies are available.
+    fn build(&mut self) -> Option<Dependencies>
+
+    /// Wait until we can successfully build the complete provided
+    /// value.
+    async fn wait(&mut self) -> Dependencies
+
+    /// Wait until the provided value has changed. Either some
+    /// dependencies are no longer available at which it returns `None`,
+    /// or all dependencies are available after which we return the
+    /// build value.
+    async fn wait_for_update(&mut self) -> Option<Dependencies>
+}
+```
+
+<br>
+
+### Fixed arguments to `Provider`
+
+Any arguments which do not have the `#[dependency]` attribute are known as
+"fixed" arguments. These must be passed in when calling the `provider`
+constructor. They can also be used during tag construction.
 
 ```rust
 use async_injector::{Injector, Key, Provider};
-use serde::Serialize;
-use std::error::Error;
-use std::future::pending;
-use std::time::Duration;
-use tokio::task::yield_now;
-use tokio::time::sleep;
 
-/// Fake database connection.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Database {
-    url: String,
-    connection_limit: u32,
-}
-
-/// Provider that describes how to construct a database.
-#[derive(Serialize)]
-pub enum Tag {
-    DatabaseUrl,
-    ConnectionLimit,
-    Shutdown,
-}
-
-/// A group of database params to wait for until they become available.
 #[derive(Provider)]
-struct DatabaseParams {
-    #[dependency(tag = Tag::DatabaseUrl)]
-    url: String,
-    #[dependency(tag = Tag::ConnectionLimit)]
-    connection_limit: u32,
+struct Dependencies {
+    name_tag: &'static str,
+    #[dependency(tag = name_tag)]
+    name: String,
 }
 
-async fn update_db_params(
-    injector: Injector,
-    db_url: Key<String>,
-    connection_limit: Key<u32>,
-    shutdown: Key<bool>,
-) {
-    injector
-        .update_key(&db_url, String::from("example.com"))
-        .await;
-
-    for limit in 5..10 {
-        sleep(Duration::from_millis(100)).await;
-        injector.update_key(&connection_limit, limit).await;
-    }
-
-    // Yield to give the update a chance to propagate.
-    yield_now().await;
-    injector.update_key(&shutdown, true).await;
-}
-
-/// Fake service that runs for two seconds with a configured database.
-async fn service(database: Database) {
-    println!("Starting new service with database: {:?}", database);
-    pending::<()>().await;
-}
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let db_url = Key::<String>::tagged(Tag::DatabaseUrl)?;
-    let connection_limit = Key::<u32>::tagged(Tag::ConnectionLimit)?;
-    let shutdown = Key::<bool>::tagged(Tag::Shutdown)?;
-
-    let injector = Injector::new();
-
-    // Set up asynchronous task that updates the parameters in the background.
-    tokio::spawn(update_db_params(
-        injector.clone(),
-        db_url,
-        connection_limit,
-        shutdown.clone(),
-    ));
-
-    let mut provider = DatabaseParams::provider(&injector).await?;
-
-    // Wait until database is configured.
-    let params = provider.wait().await;
-
-    let database = Database {
-        url: params.url,
-        connection_limit: params.connection_limit,
-    };
-
-    assert_eq!(
-        database,
-        Database {
-            url: String::from("example.com"),
-            connection_limit: 5
-        }
-    );
-
-    let (mut shutdown, is_shutdown) = injector.stream_key(&shutdown).await;
-
-    if is_shutdown == Some(true) {
-        return Ok(());
-    }
-
-    let fut = service(database);
-    tokio::pin!(fut);
-
-    loop {
-        tokio::select! {
-            _ = &mut fut => {
-                break;
-            }
-            is_shutdown = shutdown.recv() => {
-                if is_shutdown == Some(true) {
-                    break;
-                }
-            }
-            params = provider.wait() => {
-                fut.set(service(Database {
-                    url: params.url,
-                    connection_limit: params.connection_limit,
-                }));
-            }
-        }
-    }
-
+async fn greeter(injector: Injector) -> Result<(), Box<dyn std::error::Error>> {
+    let mut provider = Dependencies::provider(&injector, "name").await?;
+    let Dependencies { name, .. } = provider.wait().await;
+    println!("Hi {name}!");
     Ok(())
 }
 ```
 
+[`OxidizeBot`]: https://github.com/udoprog/async-injector
 [cannot be hashed]: https://internals.rust-lang.org/t/f32-f64-should-implement-hash/5436
-[Injector]: https://docs.rs/async-injector/0/async_injector/struct.Injector.html
-[Key]: https://docs.rs/async-injector/0/async_injector/struct.Key.html
-[Provider]: https://docs.rs/async-injector/0/async_injector/derive.Provider.html
-[serde]: https://serde.rs
-[Stream]: https://docs.rs/futures-core/0/futures_core/stream/trait.Stream.html
-[String]: https://doc.rust-lang.org/std/string/struct.String.html
+[`Injector`]: https://docs.rs/async-injector/0/async_injector/struct.Injector.html
+[`Key`]: https://docs.rs/async-injector/0/async_injector/struct.Key.html
+[`Provider`]: https://docs.rs/async-injector/0/async_injector/derive.Provider.html
+[`serde`]: https://serde.rs
+[`Stream`]: https://docs.rs/futures-core/0/futures_core/stream/trait.Stream.html
+[`String`]: https://doc.rust-lang.org/std/string/struct.String.html

@@ -195,6 +195,8 @@ fn impl_provider(
     let mut fixed_args = Vec::new();
     let mut fixed_idents = Vec::new();
 
+    let clone = quote!(::std::clone::Clone);
+
     for f in &config.fields {
         let field_ident = f.ident;
         let field_stream = syn::Ident::new(&format!("{}_stream", field_ident), Span::call_site());
@@ -226,7 +228,7 @@ fn impl_provider(
 
             if dep.optional {
                 initialized_fields.push(quote_spanned! { f.field.span() =>
-                    #field_ident: self.#field_value.as_ref().map(Clone::clone),
+                    #field_ident: self.#field_value.as_ref().map(#clone::clone),
                 });
             } else {
                 provider_extract.push(quote_spanned! { f.field.span() =>
@@ -237,7 +239,7 @@ fn impl_provider(
                 });
 
                 initialized_fields.push(quote_spanned! { dep.span =>
-                    #field_ident: #field_value.clone(),
+                    #field_ident: #clone::clone(#field_value),
                 });
             };
         } else {
@@ -246,7 +248,7 @@ fn impl_provider(
             provider_fields.push(quote!(#field_ident: #field_ty));
 
             initialized_fields.push(quote_spanned! { f.field.span() =>
-                #field_ident: self.#field_ident.clone(),
+                #field_ident: #clone::clone(&self.#field_ident),
             });
 
             constructor_fields.push(field_ident.clone());

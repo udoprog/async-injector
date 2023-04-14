@@ -4,13 +4,11 @@
 //!
 //! Asynchronous dependency injection for Rust.
 //!
-//! This crate provides a dependency injection system that can be used to
-//! reactively reconfigure you're application while it's running. Reactive in
-//! this case refers to the application being reconfigured as-the-value changes,
-//! and not for other typical scenarios such as when it's being restarted.
+//! This library provides the glue which allows for building robust decoupled
+//! applications that can be reconfigured dynamically while they are running.
 //!
-//! Values are provided as [Stream]s of updates that can be subscribed to as
-//! necessary throughout your application.
+//! For a real world example of how this is used, see [`OxidizeBot`] for which
+//! it was written.
 //!
 //! <br>
 //!
@@ -23,47 +21,53 @@
 //! async-injector = "0.19.0"
 //! ```
 //!
+//! <br>
+//!
+//! ## Example
+//!
 //! In the following we'll showcase the injection of a *fake* `Database`. The
 //! idea here would be that if something about the database connection changes,
 //! a new instance of `Database` would be created and cause the application to
-//! update.
-//!
-//! > This is available as the `fake_database` example:
-//! > ```sh
-//! > cargo run --example fake_database
-//! > ```
+//! reconfigure itself.
 //!
 //! ```rust
-//! #[derive(Clone)]
+//! use async_injector::{Key, Injector, Provider};
+//!
+//! #[derive(Debug, Clone)]
 //! struct Database;
 //!
-//! #[tokio::main]
-//! async fn main() {
-//!     let injector = async_injector::Injector::new();
-//!     let (mut database_stream, mut database) = injector.stream::<Database>().await;
+//! #[derive(Debug, Provider)]
+//! struct Service {
+//!     #[dependency]
+//!     database: Database,
+//! }
 //!
-//!     // Insert the database dependency in a different task in the background.
-//!     let _ = tokio::spawn({
-//!         let injector = injector.clone();
+//! async fn service(injector: Injector) -> Result<(), Box<dyn std::error::Error>> {
+//!     let mut provider = Service::provider(&injector).await?;
 //!
-//!         async move {
-//!             injector.update(Database).await;
-//!         }
-//!     });
+//!     let Service { database } = provider.wait().await;
+//!     println!("Service got initial database {database:?}!");
 //!
-//!     assert!(database.is_none());
-//!     // Every update to the stored type will be streamed, allowing you to
-//!     // react to it.
-//!     database = database_stream.recv().await;
-//!     assert!(database.is_some());
+//!     let Service { database } = provider.wait().await;
+//!     println!("Service got new database {database:?}!");
+//!
+//!     Ok(())
 //! }
 //! ```
 //!
-//! The [Injector] provides a structured broadcast system of updates, that can
-//! integrate cleanly into asynchronous contexts.
+//! > **Note:** This is available as the `database` example:
+//! > ```sh
+//! > cargo run --example database
+//! > ```
 //!
-//! With a bit of glue, this means that your application can be reconfigured
-//! without restarting it. Providing a richer user experience.
+//! The [`Injector`] above provides a structured broadcasting system that allows
+//! for configuration updates to be cleanly integrated into asynchronous
+//! contexts. The update itself is triggered by some other component that is
+//! responsible for constructing the `Database` instance.
+//!
+//! Building up the components of your application like this means that it can
+//! be reconfigured without restarting it. Providing a much richer user
+//! experience.
 //!
 //! <br>
 //!
@@ -71,235 +75,160 @@
 //!
 //! In the previous section you might've noticed that the injected value was
 //! solely discriminated by its type: `Database`. In this example we'll show how
-//! [Key] can be used to *tag* values of the same type under different names.
-//! This can be useful when dealing with overly generic types like [String].
+//! [`Key`] can be used to *tag* values of the same type with different names to
+//! discriminate them. This can be useful when dealing with overly generic types
+//! like [`String`].
 //!
-//! The tag used must be serializable with [serde]. It must also not use any
+//! The tag used must be serializable with [`serde`]. It must also not use any
 //! components which [cannot be hashed], like `f32` and `f64`.
 //!
-//! > This is available as the `ticker` example:
-//! > ```sh
-//! > cargo run --example ticker
-//! > ```
+//! <br>
+//!
+//! ### A simple greeter
+//!
+//! The following example showcases the use of `Key` to injector two different
+//! values into an asynchronous `greeter`.
 //!
 //! ```rust,no_run
-//! use async_injector::Key;
-//! use serde::Serialize;
-//! use std::{error::Error, time::Duration};
-//! use tokio::time;
+//! use async_injector::{Key, Injector};
 //!
-//! #[derive(Serialize)]
-//! enum Tag {
-//!     One,
-//!     Two,
-//! }
+//! async fn greeter(injector: Injector) -> Result<(), Box<dyn std::error::Error>> {
+//!     let name = Key::<String>::tagged("name")?;
+//!     let fun = Key::<String>::tagged("fun")?;
 //!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn Error>> {
-//!     let injector = async_injector::Injector::new();
-//!     let one = Key::<u32>::tagged(Tag::One)?;
-//!     let two = Key::<u32>::tagged(Tag::Two)?;
-//!
-//!     tokio::spawn({
-//!         let injector = injector.clone();
-//!         let one = one.clone();
-//!
-//!         async move {
-//!             let mut interval = time::interval(Duration::from_secs(1));
-//!
-//!             for i in 0u32.. {
-//!                 interval.tick().await;
-//!                 injector.update_key(&one, i).await;
-//!             }
-//!         }
-//!     });
-//!
-//!     tokio::spawn({
-//!         let injector = injector.clone();
-//!         let two = two.clone();
-//!
-//!         async move {
-//!             let mut interval = time::interval(Duration::from_secs(1));
-//!
-//!             for i in 0u32.. {
-//!                 interval.tick().await;
-//!                 injector.update_key(&two, i * 2).await;
-//!             }
-//!         }
-//!     });
-//!
-//!     let (mut one_stream, mut one) = injector.stream_key(one).await;
-//!     let (mut two_stream, mut two) = injector.stream_key(two).await;
-//!
-//!     println!("one: {:?}", one);
-//!     println!("two: {:?}", two);
+//!     let (mut name_stream, mut name) = injector.stream_key(name).await;
+//!     let (mut fun_stream, mut fun) = injector.stream_key(fun).await;
 //!
 //!     loop {
 //!         tokio::select! {
-//!             update = one_stream.recv() => {
-//!                 one = update;
-//!                 println!("one: {:?}", one);
+//!             update = name_stream.recv() => {
+//!                 name = update;
 //!             }
-//!             update = two_stream.recv() => {
-//!                 two = update;
-//!                 println!("two: {:?}", two);
+//!             update = fun_stream.recv() => {
+//!                 fun = update;
 //!             }
 //!         }
+//!
+//!         let (Some(name), Some(fun)) = (&name, &fun) else {
+//!             continue;
+//!         };
+//!
+//!         println!("Hi {name}! I see you do \"{fun}\" for fun!");
+//!         return Ok(());
 //!     }
 //! }
 //! ```
+//!
+//! > **Note:** you can run this using:
+//! > ```sh
+//! > cargo run --example greeter
+//! > ```
+//!
+//! The loop above can be implemented more easily using the [`Provider`] derive,
+//! so let's do that.
+//!
+//! ```rust,no_run
+//! use async_injector::{Injector, Provider};
+//!
+//! #[derive(Provider)]
+//! struct Dependencies {
+//!     #[dependency(tag = "name")]
+//!     name: String,
+//!     #[dependency(tag = "fun")]
+//!     fun: String,
+//! }
+//!
+//! async fn greeter(injector: Injector) -> Result<(), Box<dyn std::error::Error>> {
+//!     let mut provider = Dependencies::provider(&injector).await?;
+//!     let Dependencies { name, fun } = provider.wait().await;
+//!     println!("Hi {name}! I see you do \"{fun}\" for fun!");
+//!     Ok(())
+//! }
+//! ```
+//!
+//! > **Note:** you can run this using:
+//! > ```sh
+//! > cargo run --example greeter_provider
+//! > ```
 //!
 //! <br>
 //!
 //! ## The `Provider` derive
 //!
-//! The following showcases how the [Provider] derive can be used to
-//! conveniently wait for groups of dependencies to be supplied.
+//! The [`Provider`] derive can be used to conveniently implement the mechanism
+//! necessary to wait for a specific set of dependencies to become available.
 //!
-//! Below we're waiting for two database parameters to become updated: `url` and
-//! `connection_limit`.
+//! It builds a companion structure next to the type being provided called
+//! `<name>Provider` which in turn implements the following set of methods:
 //!
-//! Note how the update happens in a background thread to simulate it being
-//! supplied "somewhere else". In the real world this could be caused by a
-//! multitude of things, like a configuration change in a frontend.
+//! ```rust,no_run
+//! use async_injector::{Error, Injector};
 //!
-//! > This is available as the `provider` example:
-//! > ```sh
-//! > cargo run --example provider
-//! > ```
+//! # struct Dependencies {}
+//! impl Dependencies {
+//!     /// Construct a new provider.
+//!     async fn provider(injector: &Injector) -> Result<DependenciesProvider, Error>
+//!     # { todo!() }
+//! }
 //!
-//! ```rust
+//! struct DependenciesProvider {
+//!     /* private fields */
+//! }
+//!
+//! impl DependenciesProvider {
+//!     /// Try to construct the current value. Returns [None] unless all
+//!     /// required dependencies are available.
+//!     fn build(&mut self) -> Option<Dependencies>
+//!     # { todo!() }
+//!
+//!     /// Wait until we can successfully build the complete provided
+//!     /// value.
+//!     async fn wait(&mut self) -> Dependencies
+//!     # { todo!() }
+//!
+//!     /// Wait until the provided value has changed. Either some
+//!     /// dependencies are no longer available at which it returns `None`,
+//!     /// or all dependencies are available after which we return the
+//!     /// build value.
+//!     async fn wait_for_update(&mut self) -> Option<Dependencies>
+//!     # { todo!() }
+//! }
+//! ```
+//!
+//! <br>
+//!
+//! ### Fixed arguments to `Provider`
+//!
+//! Any arguments which do not have the `#[dependency]` attribute are known as
+//! "fixed" arguments. These must be passed in when calling the `provider`
+//! constructor. They can also be used during tag construction.
+//!
+//! ```rust,no_run
 //! use async_injector::{Injector, Key, Provider};
-//! use serde::Serialize;
-//! use std::error::Error;
-//! use std::future::pending;
-//! use std::time::Duration;
-//! use tokio::task::yield_now;
-//! use tokio::time::sleep;
 //!
-//! /// Fake database connection.
-//! #[derive(Clone, Debug, PartialEq, Eq)]
-//! struct Database {
-//!     url: String,
-//!     connection_limit: u32,
-//! }
-//!
-//! /// Provider that describes how to construct a database.
-//! #[derive(Serialize)]
-//! pub enum Tag {
-//!     DatabaseUrl,
-//!     ConnectionLimit,
-//!     Shutdown,
-//! }
-//!
-//! /// A group of database params to wait for until they become available.
 //! #[derive(Provider)]
-//! struct DatabaseParams {
-//!     #[dependency(tag = Tag::DatabaseUrl)]
-//!     url: String,
-//!     #[dependency(tag = Tag::ConnectionLimit)]
-//!     connection_limit: u32,
+//! struct Dependencies {
+//!     name_tag: &'static str,
+//!     #[dependency(tag = name_tag)]
+//!     name: String,
 //! }
 //!
-//! async fn update_db_params(
-//!     injector: Injector,
-//!     db_url: Key<String>,
-//!     connection_limit: Key<u32>,
-//!     shutdown: Key<bool>,
-//! ) {
-//!     injector
-//!         .update_key(&db_url, String::from("example.com"))
-//!         .await;
-//!
-//!     for limit in 5..10 {
-//!         sleep(Duration::from_millis(100)).await;
-//!         injector.update_key(&connection_limit, limit).await;
-//!     }
-//!
-//!     // Yield to give the update a chance to propagate.
-//!     yield_now().await;
-//!     injector.update_key(&shutdown, true).await;
-//! }
-//!
-//! /// Fake service that runs for two seconds with a configured database.
-//! async fn service(database: Database) {
-//!     println!("Starting new service with database: {:?}", database);
-//!     pending::<()>().await;
-//! }
-//!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn Error>> {
-//!     let db_url = Key::<String>::tagged(Tag::DatabaseUrl)?;
-//!     let connection_limit = Key::<u32>::tagged(Tag::ConnectionLimit)?;
-//!     let shutdown = Key::<bool>::tagged(Tag::Shutdown)?;
-//!
-//!     let injector = Injector::new();
-//!
-//!     // Set up asynchronous task that updates the parameters in the background.
-//!     tokio::spawn(update_db_params(
-//!         injector.clone(),
-//!         db_url,
-//!         connection_limit,
-//!         shutdown.clone(),
-//!     ));
-//!
-//!     let mut provider = DatabaseParams::provider(&injector).await?;
-//!
-//!     // Wait until database is configured.
-//!     let params = provider.wait().await;
-//!
-//!     let database = Database {
-//!         url: params.url,
-//!         connection_limit: params.connection_limit,
-//!     };
-//!
-//!     assert_eq!(
-//!         database,
-//!         Database {
-//!             url: String::from("example.com"),
-//!             connection_limit: 5
-//!         }
-//!     );
-//!
-//!     let (mut shutdown, is_shutdown) = injector.stream_key(&shutdown).await;
-//!
-//!     if is_shutdown == Some(true) {
-//!         return Ok(());
-//!     }
-//!
-//!     let fut = service(database);
-//!     tokio::pin!(fut);
-//!
-//!     loop {
-//!         tokio::select! {
-//!             _ = &mut fut => {
-//!                 break;
-//!             }
-//!             is_shutdown = shutdown.recv() => {
-//!                 if is_shutdown == Some(true) {
-//!                     break;
-//!                 }
-//!             }
-//!             params = provider.wait() => {
-//!                 fut.set(service(Database {
-//!                     url: params.url,
-//!                     connection_limit: params.connection_limit,
-//!                 }));
-//!             }
-//!         }
-//!     }
-//!
+//! async fn greeter(injector: Injector) -> Result<(), Box<dyn std::error::Error>> {
+//!     let mut provider = Dependencies::provider(&injector, "name").await?;
+//!     let Dependencies { name, .. } = provider.wait().await;
+//!     println!("Hi {name}!");
 //!     Ok(())
 //! }
 //! ```
 //!
+//! [`OxidizeBot`]: https://github.com/udoprog/async-injector
 //! [cannot be hashed]: https://internals.rust-lang.org/t/f32-f64-should-implement-hash/5436
-//! [Injector]: https://docs.rs/async-injector/0/async_injector/struct.Injector.html
-//! [Key]: https://docs.rs/async-injector/0/async_injector/struct.Key.html
-//! [Provider]: https://docs.rs/async-injector/0/async_injector/derive.Provider.html
-//! [serde]: https://serde.rs
-//! [Stream]: https://docs.rs/futures-core/0/futures_core/stream/trait.Stream.html
-//! [String]: https://doc.rust-lang.org/std/string/struct.String.html
+//! [`Injector`]: https://docs.rs/async-injector/0/async_injector/struct.Injector.html
+//! [`Key`]: https://docs.rs/async-injector/0/async_injector/struct.Key.html
+//! [`Provider`]: https://docs.rs/async-injector/0/async_injector/derive.Provider.html
+//! [`serde`]: https://serde.rs
+//! [`Stream`]: https://docs.rs/futures-core/0/futures_core/stream/trait.Stream.html
+//! [`String`]: https://doc.rust-lang.org/std/string/struct.String.html
 
 #![deny(missing_docs)]
 
@@ -328,7 +257,7 @@ pub mod derive {
 #[doc(inline)]
 pub use async_injector_derive::Provider;
 
-/// Errors that can be raised by various functions in the [Injector].
+/// Errors that can be raised by various functions in the [`Injector`].
 #[derive(Debug)]
 pub enum Error {
     /// Error when serializing key.
@@ -357,7 +286,7 @@ impl From<hashkey::Error> for Error {
     }
 }
 
-/// A stream of updates to a value in the [Injector].
+/// A stream of updates to a value in the [`Injector`].
 ///
 /// This is created using [Injector::stream] or [Injector::stream_key] and can
 /// be used to make sure that an asynchronous process has access to the most
@@ -511,42 +440,41 @@ pub struct Injector {
 }
 
 impl Injector {
-    /// Construct an [Injector].
+    /// Construct and use an [`Injector`].
     ///
     /// # Example
     ///
     /// ```
-    /// #[tokio::main]
-    /// async fn main() {
-    ///     let injector = async_injector::Injector::new();
+    /// use async_injector::Injector;
     ///
-    ///     assert_eq!(None, injector.get::<u32>().await);
-    ///     injector.update(1u32).await;
-    ///     assert_eq!(Some(1u32), injector.get::<u32>().await);
-    ///     assert!(injector.clear::<u32>().await.is_some());
-    ///     assert_eq!(None, injector.get::<u32>().await);
-    /// }
+    /// # #[tokio::main] async fn main() {
+    /// let injector = Injector::new();
+    ///
+    /// assert_eq!(None, injector.get::<u32>().await);
+    /// injector.update(1u32).await;
+    /// assert_eq!(Some(1u32), injector.get::<u32>().await);
+    /// assert!(injector.clear::<u32>().await.is_some());
+    /// assert_eq!(None, injector.get::<u32>().await);
+    /// # }
     /// ```
     ///
-    /// # Example using a [Stream]
+    /// Example using a [`Stream`].
     ///
     /// ```
-    /// use std::error::Error;
+    /// use async_injector::Injector;
     ///
     /// #[derive(Clone)]
     /// struct Database;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     let injector = async_injector::Injector::new();
+    /// # #[tokio::main] async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let injector = Injector::new();
     ///
-    ///     let database = injector.var::<Database>().await;
+    /// let database = injector.var::<Database>().await;
     ///
-    ///     assert!(database.read().await.is_none());
-    ///     injector.update(Database).await;
-    ///     assert!(database.read().await.is_some());
-    ///     Ok(())
-    /// }
+    /// assert!(database.read().await.is_none());
+    /// injector.update(Database).await;
+    /// assert!(database.read().await.is_some());
+    /// # Ok(()) }
     /// ```
     pub fn new() -> Self {
         Self::default()
@@ -563,16 +491,17 @@ impl Injector {
     /// # Examples
     ///
     /// ```
-    /// #[tokio::main]
-    /// async fn main() {
-    ///     let injector = async_injector::Injector::new();
+    /// use async_injector::Injector;
     ///
-    ///     assert_eq!(None, injector.get::<u32>().await);
-    ///     injector.update(1u32).await;
-    ///     assert_eq!(Some(1u32), injector.get::<u32>().await);
-    ///     assert!(injector.clear::<u32>().await.is_some());
-    ///     assert_eq!(None, injector.get::<u32>().await);
-    /// }
+    /// # #[tokio::main] async fn main() {
+    /// let injector = Injector::new();
+    ///
+    /// assert_eq!(None, injector.get::<u32>().await);
+    /// injector.update(1u32).await;
+    /// assert_eq!(Some(1u32), injector.get::<u32>().await);
+    /// assert!(injector.clear::<u32>().await.is_some());
+    /// assert_eq!(None, injector.get::<u32>().await);
+    /// # }
     /// ```
     pub async fn clear<T>(&self) -> Option<T>
     where
@@ -593,21 +522,17 @@ impl Injector {
     ///
     /// ```
     /// use async_injector::{Key, Injector};
-    /// use std::error::Error;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     let injector = async_injector::Injector::new();
-    ///     let k = Key::<u32>::tagged("foo")?;
+    /// # #[tokio::main] async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let injector = Injector::new();
+    /// let k = Key::<u32>::tagged("first")?;
     ///
-    ///     assert_eq!(None, injector.get_key(&k).await);
-    ///     injector.update_key(&k, 1u32).await;
-    ///     assert_eq!(Some(1u32), injector.get_key(&k).await);
-    ///     assert!(injector.clear_key(&k).await.is_some());
-    ///     assert_eq!(None, injector.get_key(&k).await);
-    ///
-    ///     Ok(())
-    /// }
+    /// assert_eq!(None, injector.get_key(&k).await);
+    /// injector.update_key(&k, 1u32).await;
+    /// assert_eq!(Some(1u32), injector.get_key(&k).await);
+    /// assert!(injector.clear_key(&k).await.is_some());
+    /// assert_eq!(None, injector.get_key(&k).await);
+    /// # Ok(()) }
     /// ```
     pub async fn clear_key<T>(&self, key: impl AsRef<Key<T>>) -> Option<T>
     where
@@ -633,14 +558,16 @@ impl Injector {
     /// # Examples
     ///
     /// ```
-    /// #[tokio::main]
-    /// async fn main() {
-    ///     let injector = async_injector::Injector::new();
+    /// use async_injector::Injector;
     ///
-    ///     assert_eq!(None, injector.get::<u32>().await);
-    ///     injector.update(1u32).await;
-    ///     assert_eq!(Some(1u32), injector.get::<u32>().await);
-    /// }
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let injector = Injector::new();
+    ///
+    /// assert_eq!(None, injector.get::<u32>().await);
+    /// injector.update(1u32).await;
+    /// assert_eq!(Some(1u32), injector.get::<u32>().await);
+    /// # }
     /// ```
     pub async fn update<T>(&self, value: T) -> Option<T>
     where
@@ -661,19 +588,15 @@ impl Injector {
     ///
     /// ```
     /// use async_injector::{Key, Injector};
-    /// use std::error::Error;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     let injector = async_injector::Injector::new();
-    ///     let k = Key::<u32>::tagged("foo")?;
+    /// # #[tokio::main] async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let injector = Injector::new();
+    /// let k = Key::<u32>::tagged("first")?;
     ///
-    ///     assert_eq!(None, injector.get_key(&k).await);
-    ///     injector.update_key(&k, 1u32).await;
-    ///     assert_eq!(Some(1u32), injector.get_key(&k).await);
-    ///
-    ///     Ok(())
-    /// }
+    /// assert_eq!(None, injector.get_key(&k).await);
+    /// injector.update_key(&k, 1u32).await;
+    /// assert_eq!(Some(1u32), injector.get_key(&k).await);
+    /// # Ok(()) }
     /// ```
     pub async fn update_key<T>(&self, key: impl AsRef<Key<T>>, value: T) -> Option<T>
     where
@@ -694,20 +617,21 @@ impl Injector {
     /// # Examples
     ///
     /// ```
-    /// #[tokio::main]
-    /// async fn main() {
-    ///     let injector = async_injector::Injector::new();
+    /// use async_injector::{Key, Injector};
     ///
-    ///     assert_eq!(false, injector.exists::<u32>().await);
-    ///     injector.update(1u32).await;
-    ///     assert_eq!(true, injector.exists::<u32>().await);
-    /// }
+    /// # #[tokio::main] async fn main() {
+    /// let injector = Injector::new();
+    ///
+    /// assert_eq!(false, injector.exists::<u32>().await);
+    /// injector.update(1u32).await;
+    /// assert_eq!(true, injector.exists::<u32>().await);
+    /// # }
     /// ```
     pub async fn exists<T>(&self) -> bool
     where
         T: Clone + Any + Send + Sync,
     {
-        self.exists_key(&Key::<T>::of()).await
+        self.exists_key(Key::<T>::of()).await
     }
 
     /// Test if a given value exists by key.
@@ -716,19 +640,15 @@ impl Injector {
     ///
     /// ```
     /// use async_injector::{Key, Injector};
-    /// use std::error::Error;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     let injector = async_injector::Injector::new();
-    ///     let k = Key::<u32>::tagged("foo")?;
+    /// # #[tokio::main] async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let injector = Injector::new();
+    /// let k = Key::<u32>::tagged("first")?;
     ///
-    ///     assert_eq!(false, injector.exists_key(&k).await);
-    ///     injector.update_key(&k, 1u32).await;
-    ///     assert_eq!(true, injector.exists_key(&k).await);
-    ///
-    ///     Ok(())
-    /// }
+    /// assert_eq!(false, injector.exists_key(&k).await);
+    /// injector.update_key(&k, 1u32).await;
+    /// assert_eq!(true, injector.exists_key(&k).await);
+    /// # Ok(()) }
     /// ```
     pub async fn exists_key<T>(&self, key: impl AsRef<Key<T>>) -> bool
     where
@@ -749,27 +669,28 @@ impl Injector {
     /// # Examples
     ///
     /// ```
-    /// #[tokio::main]
-    /// async fn main() {
-    ///     let injector = async_injector::Injector::new();
+    /// use async_injector::Injector;
     ///
-    ///     injector.update(1u32).await;
+    /// # #[tokio::main] async fn main() {
+    /// let injector = Injector::new();
     ///
-    ///     let old = injector.mutate(|value: &mut u32| {
-    ///         let old = *value;
-    ///         *value += 1;
-    ///         old
-    ///     }).await;
+    /// injector.update(1u32).await;
     ///
-    ///     assert_eq!(Some(1u32), old);
-    /// }
+    /// let old = injector.mutate(|value: &mut u32| {
+    ///     let old = *value;
+    ///     *value += 1;
+    ///     old
+    /// }).await;
+    ///
+    /// assert_eq!(Some(1u32), old);
+    /// # }
     /// ```
     pub async fn mutate<T, M, R>(&self, mutator: M) -> Option<R>
     where
         T: Clone + Any + Send + Sync,
         M: FnMut(&mut T) -> R,
     {
-        self.mutate_key(&Key::<T>::of(), mutator).await
+        self.mutate_key(Key::<T>::of(), mutator).await
     }
 
     /// Mutate the given value by key.
@@ -778,24 +699,21 @@ impl Injector {
     ///
     /// ```
     /// use async_injector::{Key, Injector};
-    /// use std::error::Error;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     let injector = async_injector::Injector::new();
-    ///     let k = Key::<u32>::tagged("foo")?;
+    /// # #[tokio::main] async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let injector = Injector::new();
+    /// let k = Key::<u32>::tagged("first")?;
     ///
-    ///     injector.update_key(&k, 1u32).await;
+    /// injector.update_key(&k, 1u32).await;
     ///
-    ///     let old = injector.mutate_key(&k, |value| {
-    ///         let old = *value;
-    ///         *value += 1;
-    ///         old
-    ///     }).await;
+    /// let old = injector.mutate_key(&k, |value| {
+    ///     let old = *value;
+    ///     *value += 1;
+    ///     old
+    /// }).await;
     ///
-    ///     assert_eq!(Some(1u32), old);
-    ///     Ok(())
-    /// }
+    /// assert_eq!(Some(1u32), old);
+    /// # Ok(()) }
     /// ```
     pub async fn mutate_key<T, M, R>(&self, key: impl AsRef<Key<T>>, mut mutator: M) -> Option<R>
     where
@@ -827,20 +745,21 @@ impl Injector {
     /// # Examples
     ///
     /// ```
-    /// #[tokio::main]
-    /// async fn main() {
-    ///     let injector = async_injector::Injector::new();
+    /// use async_injector::Injector;
     ///
-    ///     assert_eq!(None, injector.get::<u32>().await);
-    ///     injector.update(1u32).await;
-    ///     assert_eq!(Some(1u32), injector.get::<u32>().await);
-    /// }
+    /// # #[tokio::main] async fn main() {
+    /// let injector = Injector::new();
+    ///
+    /// assert_eq!(None, injector.get::<u32>().await);
+    /// injector.update(1u32).await;
+    /// assert_eq!(Some(1u32), injector.get::<u32>().await);
+    /// # }
     /// ```
     pub async fn get<T>(&self) -> Option<T>
     where
         T: Clone + Any + Send + Sync,
     {
-        self.get_key(&Key::<T>::of()).await
+        self.get_key(Key::<T>::of()).await
     }
 
     /// Get a value from the injector with the given key.
@@ -848,26 +767,22 @@ impl Injector {
     /// # Examples
     ///
     /// ```
-    /// use async_injector::{Injector, Key};
-    /// use std::error::Error;
+    /// use async_injector::{Key, Injector};
     ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     let k1 = Key::<u32>::tagged("foo")?;
-    ///     let k2 = Key::<u32>::tagged("bar")?;
+    /// # #[tokio::main] async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let k1 = Key::<u32>::tagged("first")?;
+    /// let k2 = Key::<u32>::tagged("second")?;
     ///
-    ///     let injector = async_injector::Injector::new();
+    /// let injector = Injector::new();
     ///
-    ///     assert_eq!(None, injector.get_key(&k1).await);
-    ///     assert_eq!(None, injector.get_key(&k2).await);
+    /// assert_eq!(None, injector.get_key(&k1).await);
+    /// assert_eq!(None, injector.get_key(&k2).await);
     ///
-    ///     injector.update_key(&k1, 1u32).await;
+    /// injector.update_key(&k1, 1u32).await;
     ///
-    ///     assert_eq!(Some(1u32), injector.get_key(&k1).await);
-    ///     assert_eq!(None, injector.get_key(&k2).await);
-    ///
-    ///     Ok(())
-    /// }
+    /// assert_eq!(Some(1u32), injector.get_key(&k1).await);
+    /// assert_eq!(None, injector.get_key(&k2).await);
+    /// # Ok(()) }
     /// ```
     pub async fn get_key<T>(&self, key: impl AsRef<Key<T>>) -> Option<T>
     where
@@ -889,38 +804,98 @@ impl Injector {
         })
     }
 
+    /// Wait for a value to become available.
+    ///
+    /// Note that this could potentially wait forever if the value is never
+    /// injected.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_injector::Injector;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let injector = Injector::new();
+    ///
+    /// injector.update(1u32).await;
+    /// assert_eq!(1u32, injector.wait::<u32>().await);
+    /// # }
+    /// ```
+    #[inline]
+    pub async fn wait<T>(&self) -> T
+    where
+        T: Clone + Any + Send + Sync,
+    {
+        self.wait_key(Key::<T>::of()).await
+    }
+
+    /// Wait for a value associated with the given key to become available.
+    ///
+    /// Note that this could potentially wait forever if the value is never
+    /// injected.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_injector::{Key, Injector};
+    ///
+    /// # #[tokio::main] async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let injector = Injector::new();
+    /// let tag = Key::<u32>::tagged("first")?;
+    ///
+    /// injector.update_key(&tag, 1u32).await;
+    /// assert_eq!(1u32, injector.wait_key(tag).await);
+    /// # Ok(()) }
+    /// ```
+    pub async fn wait_key<T>(&self, key: impl AsRef<Key<T>>) -> T
+    where
+        T: Clone + Any + Send + Sync,
+    {
+        let (mut stream, value) = self.stream_key(key).await;
+
+        if let Some(value) = value {
+            return value;
+        }
+
+        loop {
+            if let Some(value) = stream.recv().await {
+                return value;
+            }
+        }
+    }
+
     /// Get an existing value and setup a stream for updates at the same time.
     ///
     /// # Examples
     ///
     /// ```
-    /// use std::error::Error;
+    /// use async_injector::Injector;
     ///
     /// #[derive(Debug, Clone, PartialEq, Eq)]
     /// struct Database;
     ///
-    /// #[tokio::main]
-    /// async fn main() {
-    ///     let injector = async_injector::Injector::new();
-    ///     let (mut database_stream, mut database) = injector.stream::<Database>().await;
+    /// # #[tokio::main] async fn main() {
+    /// let injector = Injector::new();
+    /// let (mut database_stream, mut database) = injector.stream::<Database>().await;
     ///
-    ///     // Update the key somewhere else.
-    ///     tokio::spawn({
-    ///         let injector = injector.clone();
+    /// // Update the key somewhere else.
+    /// tokio::spawn({
+    ///     let injector = injector.clone();
     ///
-    ///         async move {
-    ///             injector.update(Database).await;
-    ///         }
-    ///     });
+    ///     async move {
+    ///         injector.update(Database).await;
+    ///     }
+    /// });
     ///
-    ///     let database = loop {
-    ///         if let Some(update) = database_stream.recv().await {
-    ///             break update;
-    ///         }
-    ///     };
+    /// let database = loop {
+    ///     if let Some(update) = database_stream.recv().await {
+    ///         break update;
+    ///     }
+    /// };
     ///
-    ///     assert_eq!(database, Database);
-    /// }
+    /// assert_eq!(database, Database);
+    /// # }
     /// ```
     pub async fn stream<T>(&self) -> (Stream<T>, Option<T>)
     where
@@ -934,37 +909,34 @@ impl Injector {
     /// # Examples
     ///
     /// ```
-    /// use async_injector::{Injector, Key};
-    /// use std::error::Error;
+    /// use async_injector::{Key, Injector};
     ///
     /// #[derive(Debug, Clone, PartialEq, Eq)]
     /// struct Database;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     let injector = async_injector::Injector::new();
-    ///     let db = Key::<Database>::tagged("foo")?;
-    ///     let (mut database_stream, mut database) = injector.stream_key(&db).await;
+    /// # #[tokio::main] async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let injector = Injector::new();
+    /// let db = Key::<Database>::tagged("first")?;
+    /// let (mut database_stream, mut database) = injector.stream_key(&db).await;
     ///
-    ///     // Update the key somewhere else.
-    ///     tokio::spawn({
-    ///         let db = db.clone();
-    ///         let injector = injector.clone();
+    /// // Update the key somewhere else.
+    /// tokio::spawn({
+    ///     let db = db.clone();
+    ///     let injector = injector.clone();
     ///
-    ///         async move {
-    ///             injector.update_key(&db, Database).await;
-    ///         }
-    ///     });
+    ///     async move {
+    ///         injector.update_key(&db, Database).await;
+    ///     }
+    /// });
     ///
-    ///     let database = loop {
-    ///         if let Some(update) = database_stream.recv().await {
-    ///             break update;
-    ///         }
-    ///     };
+    /// let database = loop {
+    ///     if let Some(update) = database_stream.recv().await {
+    ///         break update;
+    ///     }
+    /// };
     ///
-    ///     assert_eq!(database, Database);
-    ///     Ok(())
-    /// }
+    /// assert_eq!(database, Database);
+    /// # Ok(()) }
     /// ```
     pub async fn stream_key<T>(&self, key: impl AsRef<Key<T>>) -> (Stream<T>, Option<T>)
     where
@@ -998,28 +970,26 @@ impl Injector {
     /// # Examples
     ///
     /// ```
-    /// use std::error::Error;
+    /// use async_injector::Injector;
     ///
     /// #[derive(Clone)]
     /// struct Database;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     let injector = async_injector::Injector::new();
+    /// # #[tokio::main] async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let injector = Injector::new();
     ///
-    ///     let database = injector.var::<Database>().await;
+    /// let database = injector.var::<Database>().await;
     ///
-    ///     assert!(database.read().await.is_none());
-    ///     injector.update(Database).await;
-    ///     assert!(database.read().await.is_some());
-    ///     Ok(())
-    /// }
+    /// assert!(database.read().await.is_none());
+    /// injector.update(Database).await;
+    /// assert!(database.read().await.is_some());
+    /// # Ok(()) }
     /// ```
     pub async fn var<T>(&self) -> Ref<T>
     where
         T: Clone + Any + Send + Sync + Unpin,
     {
-        self.var_key(&Key::<T>::of()).await
+        self.var_key(Key::<T>::of()).await
     }
 
     /// Get a synchronized reference for the given configuration key.
@@ -1027,24 +997,22 @@ impl Injector {
     /// # Examples
     ///
     /// ```
-    /// use async_injector::{Injector, Key};
+    /// use async_injector::{Key, Injector};
     /// use std::error::Error;
     ///
     /// #[derive(Clone)]
     /// struct Database;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     let injector = async_injector::Injector::new();
-    ///     let db = Key::<Database>::tagged("foo")?;
+    /// # #[tokio::main] async fn main() -> Result<(), Box<dyn Error>> {
+    /// let injector = Injector::new();
+    /// let db = Key::<Database>::tagged("first")?;
     ///
-    ///     let database = injector.var_key(&db).await;
+    /// let database = injector.var_key(&db).await;
     ///
-    ///     assert!(database.read().await.is_none());
-    ///     injector.update_key(&db, Database).await;
-    ///     assert!(database.read().await.is_some());
-    ///     Ok(())
-    /// }
+    /// assert!(database.read().await.is_none());
+    /// injector.update_key(&db, Database).await;
+    /// assert!(database.read().await.is_some());
+    /// # Ok(()) }
     /// ```
     pub async fn var_key<T>(&self, key: impl AsRef<Key<T>>) -> Ref<T>
     where
@@ -1094,7 +1062,7 @@ impl RawKey {
     }
 }
 
-/// A key used to discriminate a value in the [Injector].
+/// A key used to discriminate a value in the [`Injector`].
 #[derive(Clone)]
 pub struct Key<T>
 where
@@ -1183,7 +1151,6 @@ where
     /// ```
     /// use serde::Serialize;
     /// use async_injector::Key;
-    /// use std::error::Error;
     ///
     /// struct Foo;
     ///
@@ -1199,12 +1166,11 @@ where
     ///     Two,
     /// }
     ///
-    /// # fn main() -> Result<(), Box<dyn Error>> {
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// assert_eq!(Key::<Foo>::tagged(Tag::One)?, Key::<Foo>::tagged(Tag::One)?);
     /// assert_ne!(Key::<Foo>::tagged(Tag::One)?, Key::<Foo>::tagged(Tag::Two)?);
     /// assert_ne!(Key::<Foo>::tagged(Tag::One)?, Key::<Foo>::tagged(Tag2::One)?);
-    /// # Ok(())
-    /// # }
+    /// # Ok(()) }
     /// ```
     pub fn tagged<K>(tag: K) -> Result<Self, Error>
     where
@@ -1234,7 +1200,7 @@ where
 }
 
 /// A variable allowing for the synchronized reading of avalue in the
-/// [Injector].
+/// [`Injector`].
 ///
 /// This can be created through [Injector::var] or [Injector::var_key].
 #[derive(Clone)]
@@ -1255,22 +1221,20 @@ where
     /// # Examples
     ///
     /// ```
-    /// use std::error::Error;
+    /// use async_injector::Injector;
     ///
     /// #[derive(Clone)]
     /// struct Database;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     let injector = async_injector::Injector::new();
+    /// # #[tokio::main] async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let injector = Injector::new();
     ///
-    ///     let database = injector.var::<Database>().await;
+    /// let database = injector.var::<Database>().await;
     ///
-    ///     assert!(database.read().await.is_none());
-    ///     injector.update(Database).await;
-    ///     assert!(database.read().await.is_some());
-    ///     Ok(())
-    /// }
+    /// assert!(database.read().await.is_none());
+    /// injector.update(Database).await;
+    /// assert!(database.read().await.is_some());
+    /// # Ok(()) }
     /// ```
     pub async fn read(&self) -> Option<RefReadGuard<'_, T>> {
         let value = self.value.read().await;
@@ -1292,22 +1256,20 @@ where
     /// # Examples
     ///
     /// ```
-    /// use std::error::Error;
+    /// use async_injector::Injector;
     ///
     /// #[derive(Clone)]
     /// struct Database;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     let injector = async_injector::Injector::new();
+    /// # #[tokio::main] async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let injector = Injector::new();
     ///
-    ///     let database = injector.var::<Database>().await;
+    /// let database = injector.var::<Database>().await;
     ///
-    ///     assert!(database.load().await.is_none());
-    ///     injector.update(Database).await;
-    ///     assert!(database.load().await.is_some());
-    ///     Ok(())
-    /// }
+    /// assert!(database.load().await.is_none());
+    /// injector.update(Database).await;
+    /// assert!(database.load().await.is_some());
+    /// # Ok(()) }
     /// ```
     pub async fn load(&self) -> Option<T> {
         let value = self.value.read().await;
