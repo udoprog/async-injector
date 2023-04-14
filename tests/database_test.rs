@@ -19,9 +19,9 @@ pub enum Tag {
 
 #[derive(Provider)]
 struct DatabaseParams {
-    #[dependency(tag = "Tag::DatabaseUrl")]
+    #[dependency(tag = Tag::DatabaseUrl)]
     url: String,
-    #[dependency(tag = "Tag::ConnectionLimit")]
+    #[dependency(tag = Tag::ConnectionLimit)]
     connection_limit: u32,
 }
 

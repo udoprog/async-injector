@@ -20,7 +20,7 @@ struct Thing {
 /// Provider that describes how to construct a `Thing`.
 #[derive(Provider)]
 struct ThingProvider {
-    #[dependency(tag = "\"title\"")]
+    #[dependency(tag = "title")]
     title: String,
     #[dependency]
     db: Arc<Database>,

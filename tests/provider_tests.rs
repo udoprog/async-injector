@@ -14,33 +14,16 @@ struct TestPlain {
 }
 
 #[derive(Provider)]
-struct TestTagged {
-    fixed: String,
-    #[dependency(tag = "\"bar\"")]
-    tag0: String,
-    #[dependency(tag = "TestTagged::bar_tag(&fixed)")]
-    tag1: String,
-    #[dependency(tag = "42")]
-    tag2: String,
-}
-
-impl TestTagged {
-    fn bar_tag(fixed: &str) -> Tag {
-        Tag::A
-    }
-}
-
-#[derive(Provider)]
 struct TestFixed {
     fixed: String,
-    #[dependency(tag = "\"bar\"")]
+    #[dependency(tag = "bar")]
     foo: String,
 }
 
 #[derive(Provider)]
 struct TestFixedLt<'a> {
     fixed: &'a str,
-    #[dependency(tag = "\"bar\"")]
+    #[dependency(tag = "bar")]
     foo: String,
 }
 
@@ -116,7 +99,7 @@ async fn test_something() -> Result<(), Error> {
         #[dependency]
         foo: String,
         /// Dependency to tagged bar.
-        #[dependency(tag = "\"bar\"")]
+        #[dependency(tag = "bar")]
         bar: String,
     }
 

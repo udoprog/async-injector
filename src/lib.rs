@@ -195,9 +195,9 @@
 //! /// A group of database params to wait for until they become available.
 //! #[derive(Provider)]
 //! struct DatabaseParams {
-//!     #[dependency(tag = "Tag::DatabaseUrl")]
+//!     #[dependency(tag = Tag::DatabaseUrl)]
 //!     url: String,
-//!     #[dependency(tag = "Tag::ConnectionLimit")]
+//!     #[dependency(tag = Tag::ConnectionLimit)]
 //!     connection_limit: u32,
 //! }
 //!
