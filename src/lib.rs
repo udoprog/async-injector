@@ -18,7 +18,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! async-injector = "0.19.0"
+//! async-injector = "0.19.1"
 //! ```
 //!
 //! <br>
@@ -221,7 +221,7 @@
 //! }
 //! ```
 //!
-//! [`OxidizeBot`]: https://github.com/udoprog/async-injector
+//! [`OxidizeBot`]: https://github.com/udoprog/OxidizeBot
 //! [cannot be hashed]: https://internals.rust-lang.org/t/f32-f64-should-implement-hash/5436
 //! [`Injector`]: https://docs.rs/async-injector/0/async_injector/struct.Injector.html
 //! [`Key`]: https://docs.rs/async-injector/0/async_injector/struct.Key.html
