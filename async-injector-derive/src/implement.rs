@@ -275,7 +275,7 @@ fn impl_provider(
         }
 
         #[automatically_derived]
-        #[allow(clippy::suspicious_double_ref_op)]
+        #[allow(suspicious_double_ref_op)]
         impl #generics #provider_ident #generics {
             /// Construct a new provider.
             #vis async fn new(__injector: &::async_injector::Injector #(, #args)*) -> Result<#provider_ident #generics, ::async_injector::Error> {
