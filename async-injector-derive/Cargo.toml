@@ -1,6 +1,6 @@
 [package]
 name = "async-injector-derive"
-version = "0.19.1"
+version = "0.19.2"
 authors = ["John-John Tedro <udoprog@tedro.se>"]
 edition = "2018"
 rust-version = "1.65"
