@@ -1204,7 +1204,7 @@ where
     T: Any,
 {
     fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
-        self.as_raw_key().partial_cmp(other.as_raw_key())
+        Some(self.cmp(other))
     }
 }
 
