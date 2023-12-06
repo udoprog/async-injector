@@ -34,7 +34,10 @@ impl Ctxt {
 /// Derive to implement the `Provider` trait.
 pub(crate) fn implement(cx: &Ctxt, ast: &syn::DeriveInput) -> Result<TokenStream, ()> {
     let syn::Data::Struct(st) = &ast.data else {
-        cx.error(ast.span(), "`Provider` attribute is only supported on structs");
+        cx.error(
+            ast.span(),
+            "`Provider` attribute is only supported on structs",
+        );
         return Err(());
     };
 
@@ -272,7 +275,7 @@ fn impl_provider(
         }
 
         #[automatically_derived]
-        #[allow(clippy::clone_double_ref)]
+        #[allow(clippy::suspicious_double_ref_op)]
         impl #generics #provider_ident #generics {
             /// Construct a new provider.
             #vis async fn new(__injector: &::async_injector::Injector #(, #args)*) -> Result<#provider_ident #generics, ::async_injector::Error> {
