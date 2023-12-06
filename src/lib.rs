@@ -18,7 +18,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! async-injector = "0.19.2"
+//! async-injector = "0.19.3"
 //! ```
 //!
 //! <br>
