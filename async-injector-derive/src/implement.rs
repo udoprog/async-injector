@@ -4,6 +4,13 @@ use proc_macro2::{Span, TokenStream};
 use quote::{quote, quote_spanned};
 use syn::{parse::ParseBuffer, spanned::Spanned as _};
 
+struct Tokens {
+    clone: syn::Path,
+    module: syn::Path,
+    option: syn::Path,
+    result: syn::Path,
+}
+
 #[derive(Default)]
 pub(crate) struct Ctxt {
     errors: RefCell<Vec<syn::Error>>,
@@ -41,17 +48,26 @@ pub(crate) fn implement(cx: &Ctxt, ast: &syn::DeriveInput) -> Result<TokenStream
         return Err(());
     };
 
+    let tokens = Tokens {
+        clone: syn::parse_quote!(::std::clone::Clone),
+        module: syn::parse_quote!(::async_injector),
+        option: syn::parse_quote!(::core::option::Option),
+        result: syn::parse_quote!(::core::result::Result),
+    };
+
     let config = provider_config(cx, st)?;
-    let (provider, provider_ident, fixed_args, fixed_idents) = impl_provider(ast, &config);
+    let (provider, provider_ident, fixed_args, fixed_idents) = impl_provider(ast, &config, &tokens);
 
     let vis = &ast.vis;
     let ident = &ast.ident;
     let generics = &ast.generics;
 
+    let Tokens { module, result, .. } = &tokens;
+
     let output = quote! {
         impl #generics #ident #generics {
             /// Construct a new provider for this type.
-            #vis async fn provider(injector: &::async_injector::Injector #(, #fixed_args)*) -> Result<#provider_ident #generics, ::async_injector::Error> {
+            #vis async fn provider(injector: &#module::Injector #(, #fixed_args)*) -> #result<#provider_ident #generics, #module::Error> {
                 #provider_ident::new(injector #(, #fixed_idents)*).await
             }
         }
@@ -185,6 +201,7 @@ fn provider_fields<'a>(cx: &Ctxt, st: &'a syn::DataStruct) -> Result<Vec<Provide
 fn impl_provider(
     ast: &syn::DeriveInput,
     config: &ProviderConfig<'_>,
+    tokens: &Tokens,
 ) -> (TokenStream, syn::Ident, Vec<TokenStream>, Vec<syn::Ident>) {
     let provider_ident = syn::Ident::new(&format!("{}Provider", ast.ident), Span::call_site());
 
@@ -198,7 +215,13 @@ fn impl_provider(
     let mut fixed_args = Vec::new();
     let mut fixed_idents = Vec::new();
 
-    let clone = quote!(::std::clone::Clone);
+    let Tokens {
+        module,
+        clone,
+        option,
+        result,
+        ..
+    } = tokens;
 
     for f in &config.fields {
         let field_ident = f.ident;
@@ -208,12 +231,12 @@ fn impl_provider(
         if let Some(dep) = &f.dependency {
             let field_ty = dep.ty;
 
-            provider_fields.push(quote!(#field_stream: ::async_injector::Stream<#field_ty>));
-            provider_fields.push(quote!(#field_value: Option<#field_ty>));
+            provider_fields.push(quote!(#field_stream: #module::Stream<#field_ty>));
+            provider_fields.push(quote!(#field_value: #option<#field_ty>));
 
             let key = match &dep.tag {
-                Some(tag) => quote!(::async_injector::Key::<#field_ty>::tagged(#tag)?),
-                None => quote!(::async_injector::Key::<#field_ty>::of()),
+                Some(tag) => quote!(#module::Key::<#field_ty>::tagged(#tag)?),
+                None => quote!(#module::Key::<#field_ty>::of()),
             };
 
             constructor_assign.push(quote! {
@@ -230,15 +253,12 @@ fn impl_provider(
             });
 
             if dep.optional {
-                initialized_fields.push(quote_spanned! { f.field.span() =>
+                initialized_fields.push(quote_spanned! { f.ident.span() =>
                     #field_ident: self.#field_value.as_ref().map(#clone::clone),
                 });
             } else {
-                provider_extract.push(quote_spanned! { f.field.span() =>
-                    let #field_value = match self.#field_value.as_ref() {
-                        Some(#field_value) => #field_value,
-                        None => return None,
-                    };
+                provider_extract.push(quote_spanned! { f.ident.span() =>
+                    let #field_value = self.#field_value.as_ref()?;
                 });
 
                 initialized_fields.push(quote_spanned! { dep.span =>
@@ -250,7 +270,7 @@ fn impl_provider(
 
             provider_fields.push(quote!(#field_ident: #field_ty));
 
-            initialized_fields.push(quote_spanned! { f.field.span() =>
+            initialized_fields.push(quote_spanned! { f.ident.span() =>
                 #field_ident: #clone::clone(&self.#field_ident),
             });
 
@@ -278,7 +298,7 @@ fn impl_provider(
         #[allow(suspicious_double_ref_op)]
         impl #generics #provider_ident #generics {
             /// Construct a new provider.
-            #vis async fn new(__injector: &::async_injector::Injector #(, #args)*) -> Result<#provider_ident #generics, ::async_injector::Error> {
+            #vis async fn new(__injector: &#module::Injector #(, #args)*) -> #result<#provider_ident #generics, #module::Error> {
                 #(#constructor_assign)*
 
                 Ok(#provider_ident {
@@ -290,10 +310,10 @@ fn impl_provider(
             /// Try to construct the current value. Returns [None] unless all
             /// required dependencies are available.
             #[allow(dead_code)]
-            #vis fn build(&self) -> Option<#ident #generics> {
+            #vis fn build(&self) -> #option<#ident #generics> {
                 #(#provider_extract)*
 
-                Some(#ident {
+                #option::Some(#ident {
                     #(#initialized_fields)*
                 })
             }
@@ -303,7 +323,7 @@ fn impl_provider(
             /// or all dependencies are available after which we return the
             /// build value.
             #[allow(dead_code)]
-            #vis async fn wait_for_update(&mut self) -> Option<#ident #generics> {
+            #vis async fn wait_for_update(&mut self) -> #option<#ident #generics> {
                 if self.__init {
                     self.__init = false;
                 } else {
@@ -318,14 +338,14 @@ fn impl_provider(
             #[allow(dead_code)]
             #vis async fn wait(&mut self) -> #ident #generics {
                 loop {
-                    if let Some(value) = self.wait_for_update().await {
+                    if let #option::Some(value) = self.wait_for_update().await {
                         return value;
                     }
                 }
             }
 
             async fn wait_internal(&mut self) {
-                ::async_injector::derive::select! {
+                #module::derive::select! {
                     #(#injected_update)*
                 }
             }
