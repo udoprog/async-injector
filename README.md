@@ -21,7 +21,7 @@ Add `async-injector` to your `Cargo.toml`.
 
 ```toml
 [dependencies]
-async-injector = "0.19.3"
+async-injector = "0.19.4"
 ```
 
 <br>
