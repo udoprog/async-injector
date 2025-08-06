@@ -46,18 +46,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (mut one_stream, mut one) = injector.stream_key(one).await;
     let (mut two_stream, mut two) = injector.stream_key(two).await;
 
-    println!("one: {:?}", one);
-    println!("two: {:?}", two);
+    println!("one: {one:?}");
+    println!("two: {two:?}");
 
     loop {
         tokio::select! {
             update = one_stream.recv() => {
                 one = update;
-                println!("one: {:?}", one);
+                println!("one: {one:?}");
             }
             update = two_stream.recv() => {
                 two = update;
-                println!("two: {:?}", two);
+                println!("two: {two:?}");
             }
         }
     }

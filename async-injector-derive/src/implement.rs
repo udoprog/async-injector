@@ -225,8 +225,8 @@ fn impl_provider(
 
     for f in &config.fields {
         let field_ident = f.ident;
-        let field_stream = syn::Ident::new(&format!("{}_stream", field_ident), Span::call_site());
-        let field_value = syn::Ident::new(&format!("{}_value", field_ident), Span::call_site());
+        let field_stream = syn::Ident::new(&format!("{field_ident}_stream"), Span::call_site());
+        let field_value = syn::Ident::new(&format!("{field_ident}_value"), Span::call_site());
 
         if let Some(dep) = &f.dependency {
             let field_ty = dep.ty;
