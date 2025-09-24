@@ -294,8 +294,6 @@ fn impl_provider(
             #(#provider_fields,)*
         }
 
-        #[automatically_derived]
-        #[allow(suspicious_double_ref_op)]
         impl #generics #provider_ident #generics {
             /// Construct a new provider.
             #vis async fn new(__injector: &#module::Injector #(, #args)*) -> #result<#provider_ident #generics, #module::Error> {

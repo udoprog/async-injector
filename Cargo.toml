@@ -16,10 +16,10 @@ categories = ["asynchronous"]
 [dependencies]
 async-injector-derive = { version = "=0.19.4", path = "async-injector-derive" }
 
-hashbrown = "0.13.2"
-serde = { version = "1.0.160", features = ["derive"] }
+hashbrown = { version = "0.16.0", default-features = false, features = ["default-hasher"] }
+serde = { version = "1.0.160", default-features = false, features = ["derive"] }
 serde-hashkey = "0.4.5"
-tokio = { version = "1.27.0", features = ["sync", "macros"] }
+tokio = { version = "1.27.0", default-features = false, features = ["sync", "macros"] }
 
 [dev-dependencies]
 anyhow = "1.0.70"
